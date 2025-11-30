@@ -9,11 +9,7 @@ const GUILD_ID = process.env.GUILD_ID;
 
 // ---------------- CLIENT ----------------
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages]
 });
 
 // ---------------- IN-MEMORY STORAGE ----------------
@@ -31,6 +27,13 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("checkinvoice")
+    .setDescription("Check the status of a customer's invoice.")
+    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("completeinvoice")
     .setDescription("Notify a customer that their product is ready.")
     .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
@@ -42,13 +45,6 @@ const commands = [
     .setDescription("Deliver product to customer by invoice ID.")
     .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
     .addStringOption(opt => opt.setName("link").setDescription("Link to product").setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
-    .toJSON(),
-
-  new SlashCommandBuilder()
-    .setName("checkinvoice")
-    .setDescription("Check the status of a customer's invoice.")
-    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
     .toJSON()
 ];
@@ -63,9 +59,7 @@ async function registerCommands() {
     console.log("Registering guild commands...");
     await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: commands });
     console.log("Commands registered!");
-  } catch (err) {
-    console.error(err);
-  }
+  } catch (err) { console.error(err); }
 }
 registerCommands();
 
@@ -75,19 +69,23 @@ function createAuditEmbed({ invoiceID, amount, description, issuer, clientUser, 
   const pad = n => n.toString().padStart(2, "0");
   const timestamp = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} | ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
+  const colors = { invoice: "#3498db", complete: "#2ecc71", deliver: "#27ae60" };
+  const titles = { invoice: `🧾 Invoice #${invoiceID}`, complete: `✅ Invoice Completed #${invoiceID}`, deliver: `📦 Product Delivered #${invoiceID}` };
+  const descs = { invoice: "A new invoice has been issued:", complete: "A product has been completed!", deliver: "The product has been delivered!" };
+
   const embed = new EmbedBuilder()
-    .setColor(type === "invoice" ? "#2b6cb0" : "#2ecc71")
-    .setTitle(type === "invoice" ? `🧾 Invoice #${invoiceID}` : `🎉 Product Delivered #${invoiceID}`)
-    .setDescription(type === "invoice" ? "A new invoice has been issued:" : "A product has been completed/delivered:")
+    .setColor(colors[type])
+    .setTitle(titles[type])
+    .setDescription(descs[type])
     .setAuthor({ name: issuer.tag, iconURL: issuer.displayAvatarURL() })
     .setThumbnail(clientUser.displayAvatarURL())
     .addFields(
-      { name: "💰 Amount", value: type === "invoice" ? `$${amount}` : "Paid via Tebex", inline: true },
+      { name: "💰 Amount", value: type === "invoice" ? `$${amount}` : "Paid via payment links", inline: true },
       { name: "📝 Product / Description", value: description, inline: true },
-      { name: "\u200B", value: "\u200B", inline: false },
+      { name: "\u200B", value: "\u200B" },
       { name: "👤 Customer", value: clientUser.tag, inline: true },
       { name: "🆔 Customer ID", value: clientUser.id, inline: true },
-      { name: "\u200B", value: "\u200B", inline: false },
+      { name: "\u200B", value: "\u200B" },
       { name: "👮 Issued By", value: issuer.tag, inline: true },
       { name: "🆔 Issuer ID", value: issuer.id, inline: true }
     )
@@ -102,33 +100,28 @@ function createAuditEmbed({ invoiceID, amount, description, issuer, clientUser, 
 client.on("ready", () => console.log(`Bot online as ${client.user.tag}`));
 
 client.on("interactionCreate", async i => {
-  if (!i.isChatInputCommand()) return;
+  if(!i.isChatInputCommand()) return;
   const replyEphemeral = msg => i.reply({ content: msg, ephemeral: true });
 
   // -------- /invoice --------
-  if (i.commandName === "invoice") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
-
+  if(i.commandName === "invoice") {
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
     const user = i.options.getUser("user");
     const amount = i.options.getInteger("amount");
     const description = i.options.getString("description");
-
-    // Generate unique ID
     const invoiceID = Math.floor(1000 + Math.random() * 9000);
 
-    // Save in memory
     invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending" };
 
-    // DM customer
     const invoiceDM = new EmbedBuilder()
       .setTitle(`📄 Your Invoice #${invoiceID}`)
-      .setColor("#2b6cb0")
-      .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**. Please pay via Tebex.`)
+      .setColor("#1abc9c")
+      .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**.`)
       .addFields(
-        { name: "💰 Amount Due", value: `$${amount}` },
-        { name: "💳 Payment Link", value: "[Pay on Tebex](https://your-tebex-link-here)" }
+        { name: "💰 Amount Due", value: `$${amount}`, inline: true },
+        { name: "💳 Pay Here", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
       )
-      .setFooter({ text: `Invoice ID: ${invoiceID}` })
+      .setFooter({ text: `Invoice ID: ${invoiceID} | Issued by ${i.user.tag}` })
       .setTimestamp();
 
     try { await user.send({ embeds: [invoiceDM] }); } 
@@ -136,7 +129,6 @@ client.on("interactionCreate", async i => {
 
     await replyEphemeral(`✅ Invoice #${invoiceID} sent to ${user.tag}`);
 
-    // Log
     if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
       if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID, amount, description, issuer: i.user, clientUser: user, type: "invoice" })] });
@@ -144,7 +136,7 @@ client.on("interactionCreate", async i => {
   }
 
   // -------- /checkinvoice --------
-  if (i.commandName === "checkinvoice") {
+  if(i.commandName === "checkinvoice") {
     const id = i.options.getInteger("id");
     const inv = invoices[id];
     if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
@@ -154,8 +146,8 @@ client.on("interactionCreate", async i => {
   }
 
   // -------- /completeinvoice --------
-  if (i.commandName === "completeinvoice") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+  if(i.commandName === "completeinvoice") {
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
     const id = i.options.getInteger("id");
     const inv = invoices[id];
     if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
@@ -166,8 +158,11 @@ client.on("interactionCreate", async i => {
 
     const completeDM = new EmbedBuilder()
       .setTitle(`🎉 Invoice #${id} Completed`)
-      .setColor("#2ecc71")
+      .setColor("#f1c40f")
       .setDescription(`Hello ${user.tag}, your **${inv.product}** is ready!`)
+      .addFields(
+        { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+      )
       .setFooter({ text: `Invoice ID: ${id}` })
       .setTimestamp();
 
@@ -182,8 +177,8 @@ client.on("interactionCreate", async i => {
   }
 
   // -------- /deliverproduct --------
-  if (i.commandName === "deliverproduct") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+  if(i.commandName === "deliverproduct") {
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
     const id = i.options.getInteger("id");
     const link = i.options.getString("link");
     const inv = invoices[id];
@@ -192,19 +187,21 @@ client.on("interactionCreate", async i => {
 
     const user = await client.users.fetch(inv.userID);
     const issuer = await client.users.fetch(inv.issuerID);
+    inv.status = "delivered";
 
     const deliverDM = new EmbedBuilder()
       .setTitle(`📦 Product Delivered #${id}`)
       .setColor("#27ae60")
-      .setDescription(`Hello ${user.tag}, your **${inv.product}** is delivered!`)
-      .addFields({ name: "🔗 Product Link", value: link })
+      .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered!`)
+      .addFields(
+        { name: "🔗 Product Link", value: link },
+        { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+      )
       .setFooter({ text: `Invoice ID: ${id}` })
       .setTimestamp();
 
     try { await user.send({ embeds: [deliverDM] }); } 
     catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
-
-    inv.status = "delivered";
 
     await replyEphemeral(`✅ Product delivered to ${user.tag}`);
     if(LOG_CHANNEL_ID) {
