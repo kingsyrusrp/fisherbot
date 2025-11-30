@@ -1,20 +1,13 @@
 import "dotenv/config";
-import {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  EmbedBuilder,
-  PermissionFlagsBits
-} from "discord.js";
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } from "discord.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const APP_ID = process.env.APP_ID;
-const GUILD_ID = process.env.GUILD_ID; // Your test server ID
+const GUILD_ID = process.env.GUILD_ID;
 
+// ---------------- CLIENT ----------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -23,163 +16,202 @@ const client = new Client({
   ]
 });
 
-// ------------------ SLASH COMMANDS ------------------
+// ---------------- IN-MEMORY STORAGE ----------------
+const invoices = {}; // { invoiceID: { userID, issuerID, product, amount, status } }
+
+// ---------------- SLASH COMMANDS ----------------
 const commands = [
   new SlashCommandBuilder()
     .setName("invoice")
     .setDescription("Send a payment invoice to a member.")
-    .addUserOption(option =>
-      option.setName("user").setDescription("User to invoice").setRequired(true)
-    )
-    .addIntegerOption(option =>
-      option.setName("amount").setDescription("Amount to be paid").setRequired(true)
-    )
-    .addStringOption(option =>
-      option.setName("description").setDescription("What is this invoice for?").setRequired(true)
-    )
+    .addUserOption(opt => opt.setName("user").setDescription("User to invoice").setRequired(true))
+    .addIntegerOption(opt => opt.setName("amount").setDescription("Amount to be paid").setRequired(true))
+    .addStringOption(opt => opt.setName("description").setDescription("Product description").setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
     .toJSON(),
 
   new SlashCommandBuilder()
     .setName("completeinvoice")
     .setDescription("Notify a customer that their product is ready.")
-    .addUserOption(option =>
-      option.setName("user").setDescription("Customer").setRequired(true)
-    )
-    .addStringOption(option =>
-      option.setName("product").setDescription("Product name").setRequired(true)
-    )
+    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("deliverproduct")
+    .setDescription("Deliver product to customer by invoice ID.")
+    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
+    .addStringOption(opt => opt.setName("link").setDescription("Link to product").setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("checkinvoice")
+    .setDescription("Check the status of a customer's invoice.")
+    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
     .toJSON()
 ];
 
-// ------------------ REGISTER COMMANDS ------------------
+// ---------------- REGISTER COMMANDS ----------------
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
-
   try {
-    // Clear global commands
-    console.log("⚠️ Clearing all global commands...");
+    console.log("Clearing global commands...");
     await rest.put(Routes.applicationCommands(APP_ID), { body: [] });
-    console.log("✅ Global commands cleared.");
 
-    // Register guild commands for instant updates
-    console.log("⚡ Registering guild commands...");
+    console.log("Registering guild commands...");
     await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: commands });
-    console.log("✅ Guild commands registered.");
-  } catch (error) {
-    console.error("Error registering commands:", error);
+    console.log("Commands registered!");
+  } catch (err) {
+    console.error(err);
   }
 }
 registerCommands();
 
-// ------------------ PREMIUM AUDIT EMBED ------------------
-function createAuditEmbed({ amount, description, issuer, clientUser }) {
+// ---------------- EMBED FUNCTION ----------------
+function createAuditEmbed({ invoiceID, amount, description, issuer, clientUser, type, extra }) {
   const now = new Date();
-  const pad = (n) => n.toString().padStart(2, "0");
-  const timestamp = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} | ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const pad = n => n.toString().padStart(2, "0");
+  const timestamp = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} | ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
-  return new EmbedBuilder()
-    .setColor("#2ecc71")
-    .setTitle("🧾 Invoice Sent | Audit Log")
-    .setDescription("A new invoice has been issued. Details below:")
+  const embed = new EmbedBuilder()
+    .setColor(type === "invoice" ? "#2b6cb0" : "#2ecc71")
+    .setTitle(type === "invoice" ? `🧾 Invoice #${invoiceID}` : `🎉 Product Delivered #${invoiceID}`)
+    .setDescription(type === "invoice" ? "A new invoice has been issued:" : "A product has been completed/delivered:")
     .setAuthor({ name: issuer.tag, iconURL: issuer.displayAvatarURL() })
     .setThumbnail(clientUser.displayAvatarURL())
     .addFields(
-      { name: "💰 Amount Due", value: `$${amount}`, inline: true },
+      { name: "💰 Amount", value: type === "invoice" ? `$${amount}` : "Paid via Tebex", inline: true },
       { name: "📝 Product / Description", value: description, inline: true },
       { name: "\u200B", value: "\u200B", inline: false },
-      { name: "👤 Client", value: clientUser.tag, inline: true },
-      { name: "🆔 Client ID", value: clientUser.id, inline: true },
+      { name: "👤 Customer", value: clientUser.tag, inline: true },
+      { name: "🆔 Customer ID", value: clientUser.id, inline: true },
       { name: "\u200B", value: "\u200B", inline: false },
       { name: "👮 Issued By", value: issuer.tag, inline: true },
       { name: "🆔 Issuer ID", value: issuer.id, inline: true }
     )
     .setFooter({ text: `📅 ${timestamp}` })
     .setTimestamp();
+
+  if(extra) embed.addFields({ name: "🔗 Extra Info", value: extra });
+  return embed;
 }
 
-// ------------------ BOT LOGIC ------------------
-client.on("ready", () => {
-  console.log(`Bot online as ${client.user.tag}`);
-});
+// ---------------- BOT LOGIC ----------------
+client.on("ready", () => console.log(`Bot online as ${client.user.tag}`));
 
-client.on("interactionCreate", async (i) => {
+client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand()) return;
+  const replyEphemeral = msg => i.reply({ content: msg, ephemeral: true });
 
-  // --------- /invoice COMMAND ---------
+  // -------- /invoice --------
   if (i.commandName === "invoice") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) {
-      return i.reply({ content: "❌ You do not have permission.", ephemeral: true });
-    }
+    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
 
     const user = i.options.getUser("user");
     const amount = i.options.getInteger("amount");
     const description = i.options.getString("description");
 
-    // ---- DM to Customer ----
+    // Generate unique ID
+    const invoiceID = Math.floor(1000 + Math.random() * 9000);
+
+    // Save in memory
+    invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending" };
+
+    // DM customer
     const invoiceDM = new EmbedBuilder()
-      .setTitle("📄 Your Invoice")
+      .setTitle(`📄 Your Invoice #${invoiceID}`)
       .setColor("#2b6cb0")
-      .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**. Please pay the amount below to start the development of your product.`)
+      .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**. Please pay via Tebex.`)
       .addFields(
         { name: "💰 Amount Due", value: `$${amount}` },
-        { name: "📝 Product", value: description },
-        { name: "Invoice Issued By", value: i.user.tag },
         { name: "💳 Payment Link", value: "[Pay on Tebex](https://your-tebex-link-here)" }
       )
-      .setFooter({ text: `🕒 Invoice issued on ${new Date().toLocaleString()}` })
+      .setFooter({ text: `Invoice ID: ${invoiceID}` })
       .setTimestamp();
 
-    try {
-      await user.send({ embeds: [invoiceDM] });
-    } catch {
-      return i.reply({ content: "❌ I couldn't DM that user.", ephemeral: true });
-    }
+    try { await user.send({ embeds: [invoiceDM] }); } 
+    catch { return replyEphemeral("❌ Couldn't DM the user."); }
 
-    await i.reply({ content: `✅ Invoice sent to **${user.tag}**`, ephemeral: true });
+    await replyEphemeral(`✅ Invoice #${invoiceID} sent to ${user.tag}`);
 
-    // ---- Log in Audit Channel ----
-    if (LOG_CHANNEL_ID) {
+    // Log
+    if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-      if (logChannel) {
-        logChannel.send({ embeds: [createAuditEmbed({
-          amount,
-          description,
-          issuer: i.user,
-          clientUser: user
-        })] });
-      }
+      if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID, amount, description, issuer: i.user, clientUser: user, type: "invoice" })] });
     }
   }
 
-  // --------- /completeinvoice COMMAND ---------
+  // -------- /checkinvoice --------
+  if (i.commandName === "checkinvoice") {
+    const id = i.options.getInteger("id");
+    const inv = invoices[id];
+    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+    const user = await client.users.fetch(inv.userID);
+    const issuer = await client.users.fetch(inv.issuerID);
+    await i.reply({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "invoice", extra: `Status: ${inv.status}` })] });
+  }
+
+  // -------- /completeinvoice --------
   if (i.commandName === "completeinvoice") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) {
-      return i.reply({ content: "❌ You do not have permission.", ephemeral: true });
-    }
+    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+    const id = i.options.getInteger("id");
+    const inv = invoices[id];
+    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
 
-    const user = i.options.getUser("user");
-    const product = i.options.getString("product");
+    inv.status = "completed";
+    const user = await client.users.fetch(inv.userID);
+    const issuer = await client.users.fetch(inv.issuerID);
 
-    const readyEmbed = new EmbedBuilder()
-      .setTitle("🎉 Your Product is Ready!")
+    const completeDM = new EmbedBuilder()
+      .setTitle(`🎉 Invoice #${id} Completed`)
       .setColor("#2ecc71")
-      .setDescription(`Hello ${user.tag}, your **${product}** is complete!\n\nIf you haven’t paid yet, please do so via Tebex to receive your product.`)
-      .addFields(
-        { name: "💳 Payment Link", value: "[Pay on Tebex](https://your-tebex-link-here)" }
-      )
-      .setFooter({ text: `🕒 Completed on ${new Date().toLocaleString()}` })
+      .setDescription(`Hello ${user.tag}, your **${inv.product}** is ready!`)
+      .setFooter({ text: `Invoice ID: ${id}` })
       .setTimestamp();
 
-    try {
-      await user.send({ embeds: [readyEmbed] });
-      await i.reply({ content: `✅ Product notification sent to ${user.tag}`, ephemeral: true });
-    } catch {
-      await i.reply({ content: `❌ Could not DM ${user.tag}`, ephemeral: true });
+    try { await user.send({ embeds: [completeDM] }); } 
+    catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
+
+    await replyEphemeral(`✅ Customer notified about completion.`);
+    if(LOG_CHANNEL_ID) {
+      const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
+      if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "complete" })] });
+    }
+  }
+
+  // -------- /deliverproduct --------
+  if (i.commandName === "deliverproduct") {
+    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+    const id = i.options.getInteger("id");
+    const link = i.options.getString("link");
+    const inv = invoices[id];
+    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+    if(inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
+
+    const user = await client.users.fetch(inv.userID);
+    const issuer = await client.users.fetch(inv.issuerID);
+
+    const deliverDM = new EmbedBuilder()
+      .setTitle(`📦 Product Delivered #${id}`)
+      .setColor("#27ae60")
+      .setDescription(`Hello ${user.tag}, your **${inv.product}** is delivered!`)
+      .addFields({ name: "🔗 Product Link", value: link })
+      .setFooter({ text: `Invoice ID: ${id}` })
+      .setTimestamp();
+
+    try { await user.send({ embeds: [deliverDM] }); } 
+    catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
+
+    inv.status = "delivered";
+
+    await replyEphemeral(`✅ Product delivered to ${user.tag}`);
+    if(LOG_CHANNEL_ID) {
+      const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
+      if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "deliver", extra: `Link: ${link}` })] });
     }
   }
 });
 
 client.login(TOKEN);
-
