@@ -52,6 +52,35 @@ async function registerCommands() {
 }
 registerCommands();
 
+// ------- COOL AUDIT EMBED FUNCTION -------
+function createPremiumAuditEmbed({ amount, description, issuer, clientUser }) {
+  const now = new Date();
+  const pad = (n) => n.toString().padStart(2, "0");
+  const timestamp = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} | ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  return new EmbedBuilder()
+    .setColor("#2ecc71")
+    .setTitle("🧾 Invoice Sent | Audit Log")
+    .setDescription("A new invoice has been issued. Details below:")
+    .setAuthor({ name: issuer.tag, iconURL: issuer.displayAvatarURL() })
+    .setThumbnail(clientUser.displayAvatarURL())
+    .addFields(
+      // Invoice Info
+      { name: "💰 Amount Due", value: `$${amount}`, inline: true },
+      { name: "📝 Description / Product", value: description, inline: true },
+      { name: "\u200B", value: "\u200B", inline: false },
+      // Client Info
+      { name: "👤 Client", value: clientUser.tag, inline: true },
+      { name: "🆔 Client ID", value: clientUser.id, inline: true },
+      { name: "\u200B", value: "\u200B", inline: false },
+      // Issuer Info
+      { name: "👮 Issued By", value: issuer.tag, inline: true },
+      { name: "🆔 Issuer ID", value: issuer.id, inline: true }
+    )
+    .setFooter({ text: `📅 ${timestamp}` })
+    .setTimestamp();
+}
+
 // ------- BOT LOGIC -------
 client.on("ready", () => {
   console.log(`Bot online as ${client.user.tag}`);
@@ -70,6 +99,7 @@ client.on("interactionCreate", async (i) => {
     const amount = i.options.getInteger("amount");
     const description = i.options.getString("description");
 
+    // DM Embed
     const invoiceEmbed = new EmbedBuilder()
       .setTitle("📄 New Invoice")
       .setColor("#2b6cb0")
@@ -84,18 +114,22 @@ client.on("interactionCreate", async (i) => {
     try {
       await user.send({ embeds: [invoiceEmbed] });
     } catch {
-      return i.reply({
-        content: "❌ I couldn't DM that user.",
-        ephemeral: true
-      });
+      return i.reply({ content: "❌ I couldn't DM that user.", ephemeral: true });
     }
 
     await i.reply({ content: `✅ Invoice sent to **${user.tag}**`, ephemeral: true });
 
-    // Optional log channel
+    // Audit log channel
     if (LOG_CHANNEL_ID) {
-      const log = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-      if (log) log.send({ embeds: [invoiceEmbed.setTitle("🧾 Invoice Sent (Log)")] });
+      const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
+      if (logChannel) {
+        logChannel.send({ embeds: [createPremiumAuditEmbed({
+          amount,
+          description,
+          issuer: i.user,
+          clientUser: user
+        })] });
+      }
     }
   }
 });
