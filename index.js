@@ -17,7 +17,12 @@ const GUILD_ID = process.env.GUILD_ID;
 
 // ---------------- CLIENT ----------------
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessages
+  ]
 });
 
 // ---------------- IN-MEMORY STORAGE ----------------
@@ -114,6 +119,17 @@ client.on("interactionCreate", async i => {
   if(!i.isChatInputCommand()) return;
   const replyEphemeral = msg => i.reply({ content: msg, ephemeral: true });
 
+  // Helper: Rename ticket channel
+  async function renameTicketChannel(invoiceID) {
+    if(!i.channel || !i.channel.edit) return;
+    const newName = `${i.user.username.toLowerCase()}-${invoiceID}`;
+    try {
+      await i.channel.setName(newName);
+    } catch (err) {
+      console.error("Failed to rename ticket channel:", err);
+    }
+  }
+
   // -------- /invoice --------
   if(i.commandName === "invoice") {
     if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
@@ -139,6 +155,9 @@ client.on("interactionCreate", async i => {
     catch { return replyEphemeral("❌ Couldn't DM the user."); }
 
     await replyEphemeral(`✅ Invoice #${invoiceID} sent to ${user.tag}`);
+
+    // Rename the ticket channel to developer-invoiceID
+    await renameTicketChannel(invoiceID);
 
     if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
@@ -187,61 +206,65 @@ client.on("interactionCreate", async i => {
       if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "complete" })] });
     }
   }
-// -------- /deliverproduct --------
-if (i.commandName === "deliverproduct") {
-  if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) 
-    return replyEphemeral("❌ No permission.");
 
-  const id = i.options.getInteger("id");
-  const link = i.options.getString("link");
-  const file = i.options.getAttachment("file");
-  const inv = invoices[id];
+  // -------- /deliverproduct --------
+  if (i.commandName === "deliverproduct") {
+    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) 
+      return replyEphemeral("❌ No permission.");
 
-  if (!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
-  if (inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
+    const id = i.options.getInteger("id");
+    const link = i.options.getString("link");
+    const file = i.options.getAttachment("file");
+    const inv = invoices[id];
 
-  const user = await client.users.fetch(inv.userID);
-  const issuer = await client.users.fetch(inv.issuerID);
-  inv.status = "delivered";
+    if (!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+    if (inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
 
-  const deliverDM = new EmbedBuilder()
-    .setTitle(`📦 Product Delivered #${id}`)
-    .setColor("#27ae60")
-    .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered! Thanks for using Fisher's Fabrications!`)
-    .addFields(
-      ...(link ? [{ name: "🔗 Product Link", value: link }] : [])
-    )
-    .setFooter({ text: `Invoice ID: ${id}` })
-    .setTimestamp();
+    const user = await client.users.fetch(inv.userID);
+    const issuer = await client.users.fetch(inv.issuerID);
+    inv.status = "delivered";
 
-  try {
-    await user.send({ embeds: [deliverDM], files: file ? [file] : [] });
-  } catch {
-    return replyEphemeral(`❌ Couldn't DM ${user.tag}`);
-  }
+    const deliverDM = new EmbedBuilder()
+      .setTitle(`📦 Product Delivered #${id}`)
+      .setColor("#27ae60")
+      .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered! Thanks for using Fisher's Fabrications!`)
+      .addFields(
+        ...(link ? [{ name: "🔗 Product Link", value: link }] : [])
+      )
+      .setFooter({ text: `Invoice ID: ${id}` })
+      .setTimestamp();
 
-  await replyEphemeral(`✅ Product delivered to ${user.tag}`);
+    try {
+      await user.send({ embeds: [deliverDM], files: file ? [file] : [] });
+    } catch {
+      return replyEphemeral(`❌ Couldn't DM ${user.tag}`);
+    }
 
-  // Log in audit channel
-  if (LOG_CHANNEL_ID) {
-    const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-    if (logChannel) {
-      logChannel.send({
-        embeds: [
-          createAuditEmbed({
-            invoiceID: id,
-            amount: inv.amount,
-            description: inv.product,
-            issuer,
-            clientUser: user,
-            type: "deliver",
-            extra: file ? `File: ${file.url}` : link ? `Link: ${link}` : "No file or link attached"
-          })
-        ]
-      });
+    await replyEphemeral(`✅ Product delivered to ${user.tag}`);
+
+    // Rename ticket to developer-invoiceID
+    await renameTicketChannel(id);
+
+    // Log in audit channel
+    if (LOG_CHANNEL_ID) {
+      const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
+      if (logChannel) {
+        logChannel.send({
+          embeds: [
+            createAuditEmbed({
+              invoiceID: id,
+              amount: inv.amount,
+              description: inv.product,
+              issuer,
+              clientUser: user,
+              type: "deliver",
+              extra: file ? `File: ${file.url}` : link ? `Link: ${link}` : "No file or link attached"
+            })
+          ]
+        });
+      }
     }
   }
-}
 
 });
 
