@@ -119,7 +119,7 @@ client.on("interactionCreate", async i => {
       .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**.`)
       .addFields(
         { name: "💰 Amount Due", value: `$${amount}`, inline: true },
-        { name: "💳 Pay Here", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+        { name: "💳 Pay Here", value: "[CashApp](https://cash.app/$KLHunter2008)" }
       )
       .setFooter({ text: `Invoice ID: ${invoiceID} | Issued by ${i.user.tag}` })
       .setTimestamp();
