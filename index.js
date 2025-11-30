@@ -161,7 +161,7 @@ client.on("interactionCreate", async i => {
       .setColor("#f1c40f")
       .setDescription(`Hello ${user.tag}, your **${inv.product}** is ready!`)
       .addFields(
-        { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+        { name: "💳 Payment Options", value: "[Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)" }
       )
       .setFooter({ text: `Invoice ID: ${id}` })
       .setTimestamp();
