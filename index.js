@@ -177,38 +177,60 @@ client.on("interactionCreate", async i => {
   }
 
   // -------- /deliverproduct --------
-  if(i.commandName === "deliverproduct") {
-    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
-    const id = i.options.getInteger("id");
-    const link = i.options.getString("link");
-    const inv = invoices[id];
-    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
-    if(inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
+// -------- /deliverproduct --------
+if (i.commandName === "deliverproduct") {
+  if (!i.member.roles.cache.has(SUPPORT_ROLE_ID))
+    return replyEphemeral("❌ No permission.");
 
-    const user = await client.users.fetch(inv.userID);
-    const issuer = await client.users.fetch(inv.issuerID);
-    inv.status = "delivered";
+  const id = i.options.getInteger("id");
+  const link = i.options.getString("link"); // optional product link
+  const file = i.options.getAttachment("file"); // optional uploaded file
+  const inv = invoices[id];
 
-    const deliverDM = new EmbedBuilder()
-      .setTitle(`📦 Product Delivered #${id}`)
-      .setColor("#27ae60")
-      .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered!`)
-      .addFields(
-        { name: "🔗 Product Link", value: link },
-        { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
-      )
-      .setFooter({ text: `Invoice ID: ${id}` })
-      .setTimestamp();
+  if (!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+  if (inv.status !== "completed")
+    return replyEphemeral("❌ Invoice not marked as completed yet.");
 
-    try { await user.send({ embeds: [deliverDM] }); } 
-    catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
+  const user = await client.users.fetch(inv.userID);
+  const issuer = await client.users.fetch(inv.issuerID);
+  inv.status = "delivered";
 
-    await replyEphemeral(`✅ Product delivered to ${user.tag}`);
-    if(LOG_CHANNEL_ID) {
-      const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-      if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "deliver", extra: `Link: ${link}` })] });
-    }
+  const deliverDM = new EmbedBuilder()
+    .setTitle(`📦 Product Delivered #${id}`)
+    .setColor("#27ae60")
+    .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered!`)
+    .addFields(
+      ...(link ? [{ name: "🔗 Product Link", value: link }] : []),
+      { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+    )
+    .setFooter({ text: `Invoice ID: ${id}` })
+    .setTimestamp();
+
+  try {
+    // Send embed + file if provided
+    await user.send({ embeds: [deliverDM], files: file ? [file] : [] });
+  } catch {
+    return replyEphemeral(`❌ Couldn't DM ${user.tag}`);
   }
+
+  await replyEphemeral(`✅ Product delivered to ${user.tag}`);
+
+  // Audit log
+  if (LOG_CHANNEL_ID) {
+    const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
+    if (logChannel)
+      logChannel.send({
+        embeds: [
+          createAuditEmbed({
+            invoiceID: id,
+            amount: inv.amount,
+            description: inv.product,
+            issuer,
+            clientUser: user,
+            type: "deliver",
+            extra: file ? `File: ${file.url}` : link ? `Link: ${link}` : "No file or link attached"
+          })
+        ]
 });
 
 client.login(TOKEN);
