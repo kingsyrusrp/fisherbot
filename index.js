@@ -1,5 +1,13 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  PermissionFlagsBits
+} from "discord.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID;
@@ -44,7 +52,8 @@ const commands = [
     .setName("deliverproduct")
     .setDescription("Deliver product to customer by invoice ID.")
     .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
-    .addStringOption(opt => opt.setName("link").setDescription("Link to product").setRequired(true))
+    .addStringOption(opt => opt.setName("link").setDescription("Link to product").setRequired(false))
+    .addAttachmentOption(opt => opt.setName("file").setDescription("Attach a file").setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
     .toJSON()
 ];
@@ -59,7 +68,9 @@ async function registerCommands() {
     console.log("Registering guild commands...");
     await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: commands });
     console.log("Commands registered!");
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+  }
 }
 registerCommands();
 
@@ -69,7 +80,7 @@ function createAuditEmbed({ invoiceID, amount, description, issuer, clientUser, 
   const pad = n => n.toString().padStart(2, "0");
   const timestamp = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} | ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
-  const colors = { invoice: "#3498db", complete: "#2ecc71", deliver: "#27ae60" };
+  const colors = { invoice: "#3498db", complete: "#f1c40f", deliver: "#27ae60" };
   const titles = { invoice: `🧾 Invoice #${invoiceID}`, complete: `✅ Invoice Completed #${invoiceID}`, deliver: `📦 Product Delivered #${invoiceID}` };
   const descs = { invoice: "A new invoice has been issued:", complete: "A product has been completed!", deliver: "The product has been delivered!" };
 
@@ -119,7 +130,7 @@ client.on("interactionCreate", async i => {
       .setDescription(`Hello ${user.tag},\n\nYou have requested a **${description}**.`)
       .addFields(
         { name: "💰 Amount Due", value: `$${amount}`, inline: true },
-        { name: "💳 Pay Here", value: "[CashApp](https://cash.app/$KLHunter2008)" }
+        { name: "💳 Payment Options", value: "[Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)" }
       )
       .setFooter({ text: `Invoice ID: ${invoiceID} | Issued by ${i.user.tag}` })
       .setTimestamp();
@@ -170,26 +181,24 @@ client.on("interactionCreate", async i => {
     catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
 
     await replyEphemeral(`✅ Customer notified about completion.`);
+
     if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
       if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "complete" })] });
     }
   }
-
-  // -------- /deliverproduct --------
 // -------- /deliverproduct --------
 if (i.commandName === "deliverproduct") {
-  if (!i.member.roles.cache.has(SUPPORT_ROLE_ID))
+  if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) 
     return replyEphemeral("❌ No permission.");
 
   const id = i.options.getInteger("id");
-  const link = i.options.getString("link"); // optional product link
-  const file = i.options.getAttachment("file"); // optional uploaded file
+  const link = i.options.getString("link");
+  const file = i.options.getAttachment("file");
   const inv = invoices[id];
 
   if (!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
-  if (inv.status !== "completed")
-    return replyEphemeral("❌ Invoice not marked as completed yet.");
+  if (inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
 
   const user = await client.users.fetch(inv.userID);
   const issuer = await client.users.fetch(inv.issuerID);
@@ -198,16 +207,14 @@ if (i.commandName === "deliverproduct") {
   const deliverDM = new EmbedBuilder()
     .setTitle(`📦 Product Delivered #${id}`)
     .setColor("#27ae60")
-    .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered!`)
+    .setDescription(`Hello ${user.tag}, your **${inv.product}** has been delivered! Thanks for using Fisher's Fabrications!`)
     .addFields(
-      ...(link ? [{ name: "🔗 Product Link", value: link }] : []),
-      { name: "💳 Payment Options", value: "[PayPal](https://paypal.me/YourLink) | [Venmo](https://venmo.com/YourLink) | [Tebex](https://your-tebex-link-here)" }
+      ...(link ? [{ name: "🔗 Product Link", value: link }] : [])
     )
     .setFooter({ text: `Invoice ID: ${id}` })
     .setTimestamp();
 
   try {
-    // Send embed + file if provided
     await user.send({ embeds: [deliverDM], files: file ? [file] : [] });
   } catch {
     return replyEphemeral(`❌ Couldn't DM ${user.tag}`);
@@ -215,10 +222,10 @@ if (i.commandName === "deliverproduct") {
 
   await replyEphemeral(`✅ Product delivered to ${user.tag}`);
 
-  // Audit log
+  // Log in audit channel
   if (LOG_CHANNEL_ID) {
     const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-    if (logChannel)
+    if (logChannel) {
       logChannel.send({
         embeds: [
           createAuditEmbed({
@@ -231,6 +238,11 @@ if (i.commandName === "deliverproduct") {
             extra: file ? `File: ${file.url}` : link ? `Link: ${link}` : "No file or link attached"
           })
         ]
+      });
+    }
+  }
+}
+
 });
 
 client.login(TOKEN);
