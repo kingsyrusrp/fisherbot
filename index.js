@@ -17,12 +17,7 @@ const GUILD_ID = process.env.GUILD_ID;
 
 // ---------------- CLIENT ----------------
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildMessages
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages]
 });
 
 // ---------------- IN-MEMORY STORAGE ----------------
@@ -112,27 +107,29 @@ function createAuditEmbed({ invoiceID, amount, description, issuer, clientUser, 
   return embed;
 }
 
+// ---------------- HELPER: RENAME CHANNEL ----------------
+async function renameTicketChannel(channel, invoiceID, developerUsername) {
+  if (!channel || !channel.setName) return;
+  const newName = `${developerUsername.toLowerCase()}-${invoiceID}`;
+  try {
+    await channel.setName(newName);
+    console.log(`Channel renamed to ${newName}`);
+  } catch (err) {
+    console.error("Failed to rename ticket channel:", err);
+  }
+}
+
 // ---------------- BOT LOGIC ----------------
 client.on("ready", () => console.log(`Bot online as ${client.user.tag}`));
 
 client.on("interactionCreate", async i => {
   if(!i.isChatInputCommand()) return;
-  const replyEphemeral = msg => i.reply({ content: msg, ephemeral: true });
-
-  // Helper: Rename ticket channel
-  async function renameTicketChannel(invoiceID) {
-    if(!i.channel || !i.channel.edit) return;
-    const newName = `${i.user.username.toLowerCase()}-${invoiceID}`;
-    try {
-      await i.channel.setName(newName);
-    } catch (err) {
-      console.error("Failed to rename ticket channel:", err);
-    }
-  }
+  const replyPublic = msg => i.reply({ content: msg });
 
   // -------- /invoice --------
   if(i.commandName === "invoice") {
-    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyPublic("❌ No permission.");
+
     const user = i.options.getUser("user");
     const amount = i.options.getInteger("amount");
     const description = i.options.getString("description");
@@ -140,6 +137,7 @@ client.on("interactionCreate", async i => {
 
     invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending" };
 
+    // Send invoice DM
     const invoiceDM = new EmbedBuilder()
       .setTitle(`📄 Your Invoice #${invoiceID}`)
       .setColor("#1abc9c")
@@ -152,13 +150,15 @@ client.on("interactionCreate", async i => {
       .setTimestamp();
 
     try { await user.send({ embeds: [invoiceDM] }); } 
-    catch { return replyEphemeral("❌ Couldn't DM the user."); }
+    catch { return replyPublic("❌ Couldn't DM the user."); }
 
-    await replyEphemeral(`✅ Invoice #${invoiceID} sent to ${user.tag}`);
+    // Reply publicly
+    await replyPublic(`✅ Invoice #${invoiceID} sent to ${user.tag}`);
 
-    // Rename the ticket channel to developer-invoiceID
-    await renameTicketChannel(invoiceID);
+    // Rename ticket channel if this is a support ticket
+    await renameTicketChannel(i.channel, invoiceID, i.user.username);
 
+    // Audit log
     if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
       if(logChannel) logChannel.send({ embeds: [createAuditEmbed({ invoiceID, amount, description, issuer: i.user, clientUser: user, type: "invoice" })] });
@@ -169,7 +169,7 @@ client.on("interactionCreate", async i => {
   if(i.commandName === "checkinvoice") {
     const id = i.options.getInteger("id");
     const inv = invoices[id];
-    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+    if(!inv) return replyPublic(`❌ No invoice found with ID ${id}`);
     const user = await client.users.fetch(inv.userID);
     const issuer = await client.users.fetch(inv.issuerID);
     await i.reply({ embeds: [createAuditEmbed({ invoiceID: id, amount: inv.amount, description: inv.product, issuer, clientUser: user, type: "invoice", extra: `Status: ${inv.status}` })] });
@@ -177,10 +177,10 @@ client.on("interactionCreate", async i => {
 
   // -------- /completeinvoice --------
   if(i.commandName === "completeinvoice") {
-    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyEphemeral("❌ No permission.");
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyPublic("❌ No permission.");
     const id = i.options.getInteger("id");
     const inv = invoices[id];
-    if(!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
+    if(!inv) return replyPublic(`❌ No invoice found with ID ${id}`);
 
     inv.status = "completed";
     const user = await client.users.fetch(inv.userID);
@@ -197,9 +197,9 @@ client.on("interactionCreate", async i => {
       .setTimestamp();
 
     try { await user.send({ embeds: [completeDM] }); } 
-    catch { return replyEphemeral(`❌ Couldn't DM ${user.tag}`); }
+    catch { return replyPublic(`❌ Couldn't DM ${user.tag}`); }
 
-    await replyEphemeral(`✅ Customer notified about completion.`);
+    await replyPublic(`✅ Customer notified about completion.`);
 
     if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
@@ -208,17 +208,15 @@ client.on("interactionCreate", async i => {
   }
 
   // -------- /deliverproduct --------
-  if (i.commandName === "deliverproduct") {
-    if (!i.member.roles.cache.has(SUPPORT_ROLE_ID)) 
-      return replyEphemeral("❌ No permission.");
-
+  if(i.commandName === "deliverproduct") {
+    if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyPublic("❌ No permission.");
     const id = i.options.getInteger("id");
     const link = i.options.getString("link");
     const file = i.options.getAttachment("file");
     const inv = invoices[id];
 
-    if (!inv) return replyEphemeral(`❌ No invoice found with ID ${id}`);
-    if (inv.status !== "completed") return replyEphemeral("❌ Invoice not marked as completed yet.");
+    if(!inv) return replyPublic(`❌ No invoice found with ID ${id}`);
+    if(inv.status !== "completed") return replyPublic("❌ Invoice not marked as completed yet.");
 
     const user = await client.users.fetch(inv.userID);
     const issuer = await client.users.fetch(inv.issuerID);
@@ -237,18 +235,14 @@ client.on("interactionCreate", async i => {
     try {
       await user.send({ embeds: [deliverDM], files: file ? [file] : [] });
     } catch {
-      return replyEphemeral(`❌ Couldn't DM ${user.tag}`);
+      return replyPublic(`❌ Couldn't DM ${user.tag}`);
     }
 
-    await replyEphemeral(`✅ Product delivered to ${user.tag}`);
+    await replyPublic(`✅ Product delivered to ${user.tag}`);
 
-    // Rename ticket to developer-invoiceID
-    await renameTicketChannel(id);
-
-    // Log in audit channel
-    if (LOG_CHANNEL_ID) {
+    if(LOG_CHANNEL_ID) {
       const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
-      if (logChannel) {
+      if(logChannel) {
         logChannel.send({
           embeds: [
             createAuditEmbed({
