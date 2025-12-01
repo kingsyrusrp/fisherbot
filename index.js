@@ -9,7 +9,7 @@ import {
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle,
+  ButtonStyle
 } from "discord.js";
 
 // ---------- ENV ----------
@@ -33,7 +33,7 @@ const client = new Client({
 });
 
 // ---------- STORAGE ----------
-const invoices = {}; // invoiceID: { userID, issuerID, product, amount, status, ticketID, createdAt }
+const invoices = {}; // invoiceID: { userID, issuerID, product, amount, status, channelID, messageID, createdAt }
 const warnings = {}; // userID: [reason1, reason2]
 let altDays = 7;
 
@@ -55,14 +55,6 @@ function createEmbed({ title, description, color = "#3498db", extra, footer }) {
 
 // ---------- SLASH COMMANDS ----------
 const commands = [
-  new SlashCommandBuilder().setName("ticket").setDescription("Open a ticket")
-    .addStringOption(opt => opt.setName("type").setDescription("Type of ticket").setRequired(true)
-      .addChoices(
-        { name: "Support", value: "support" },
-        { name: "EUP Commissions", value: "eup" },
-        { name: "Livery Commissions", value: "livery" }
-      )).toJSON(),
-
   new SlashCommandBuilder().setName("invoice").setDescription("Send a payment invoice")
     .addUserOption(opt => opt.setName("user").setDescription("User to invoice").setRequired(true))
     .addIntegerOption(opt => opt.setName("amount").setDescription("Amount").setRequired(true))
@@ -128,15 +120,15 @@ registerCommands();
 client.on("ready", () => {
   console.log(`🤖 Bot online as ${client.user.tag}`);
 
-  // ---------- AUTOMATIC INVOICE REMINDERS ----------
+  // Automatic invoice reminders
   setInterval(async () => {
     for (const [id, invoice] of Object.entries(invoices)) {
       if (invoice.status === "pending") {
         const user = await client.users.fetch(invoice.userID).catch(() => null);
-        if (user) user.send(`Reminder: Invoice #${id} for **${invoice.product}** is still pending. Please complete the payment.`).catch(()=>{});
+        if (user) user.send(`Reminder: Invoice #${id} for **${invoice.product}** is still pending.`).catch(()=>{});
       }
     }
-  }, 1000 * 60 * 60); // every 1 hour
+  }, 1000 * 60 * 60);
 });
 
 // ---------- INTERACTION HANDLER ----------
@@ -151,7 +143,7 @@ client.on("interactionCreate", async interaction => {
     else if (msg.embeds) interaction.reply({ embeds: msg.embeds, flags: 0 }).catch(()=>{});
   };
 
-  // ---------- ALT ACCOUNT DETECTION ----------
+  // Alt detection
   let isAlt = isAltAccount(member);
   if (isAlt) {
     const embed = createEmbed({
@@ -162,7 +154,7 @@ client.on("interactionCreate", async interaction => {
     if(logMod) logMod.send({ embeds:[embed] });
   }
 
-  // ---------- BUTTON HANDLER ----------
+  // Button handler
   if(interaction.isButton()){
     const [action, invoiceID] = interaction.customId.split("-");
     const invoice = invoices[invoiceID];
@@ -170,58 +162,41 @@ client.on("interactionCreate", async interaction => {
 
     const user = await client.users.fetch(invoice.userID);
     const issuer = await client.users.fetch(invoice.issuerID);
-    const ticketChannel = await interaction.guild.channels.fetch(invoice.ticketID);
+    const channel = await client.channels.fetch(invoice.channelID);
+    const message = await channel.messages.fetch(invoice.messageID).catch(()=>null);
 
+    let embed;
     if(action === "complete"){
       invoice.status="completed";
-      const embed = createEmbed({
+      embed = createEmbed({
         title:`✅ Invoice #${invoiceID} Completed`,
         description:`Invoice for **${invoice.product}** is completed.`,
         color:"#f1c40f",
         extra:`Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
       });
-      if(ticketChannel) ticketChannel.send({embeds:[embed]});
-      if(logInvoice) logInvoice.send({embeds:[embed]});
-      return reply(`✅ Invoice #${invoiceID} marked completed`);
     }
 
     if(action === "deliver"){
       invoice.status="delivered";
-      const embed = createEmbed({
+      embed = createEmbed({
         title:`📦 Invoice #${invoiceID} Delivered`,
         description:`Invoice for **${invoice.product}** delivered.`,
         color:"#27ae60",
         extra:`Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
       });
-      if(ticketChannel) ticketChannel.send({embeds:[embed]});
-      if(logInvoice) logInvoice.send({embeds:[embed]});
-      return reply(`✅ Invoice #${invoiceID} marked delivered`);
     }
+
+    if(message) message.edit({ embeds:[embed] }).catch(()=>{});
+    if(logInvoice) logInvoice.send({embeds:[embed]});
+    return reply(`✅ Invoice #${invoiceID} updated`);
   }
 
-  // ---------- COMMAND HANDLER ----------
+  // Command handler
   if(!interaction.isChatInputCommand()) return;
 
   try{
     switch(interaction.commandName){
-      case "ticket": {
-        const type = interaction.options.getString("type");
-        const ping = type==="support"?`<@&${SUPPORT_ROLE_ID}>`:"";
-        const ticketChannel = await interaction.guild.channels.create({
-          name:`${interaction.user.username}-${type}-ticket`,
-          type:0,
-          permissionOverwrites:[
-            {id:interaction.guild.id,deny:["ViewChannel"]},
-            {id:interaction.user.id,allow:["ViewChannel","SendMessages"]},
-            {id:SUPPORT_ROLE_ID,allow:["ViewChannel","SendMessages"]},
-          ]
-        });
-        const embed = createEmbed({title:`${type} Ticket`,description:`${ping}\nA staff member will assist you shortly.`,color:"#f1c40f"});
-        await ticketChannel.send({content:ping,embeds:[embed]});
-        reply(`✅ Ticket created: ${ticketChannel}`);
-        break;
-      }
-
+      // INVOICE
       case "invoice": {
         if(!interaction.member.roles.cache.has(SUPPORT_ROLE_ID)) return reply("❌ No permission.");
         const user = interaction.options.getUser("user");
@@ -229,17 +204,9 @@ client.on("interactionCreate", async interaction => {
         const desc = interaction.options.getString("description");
         const invoiceID = Math.floor(1000+Math.random()*9000);
 
-        const ticketChannel = await interaction.guild.channels.create({
-          name:`invoice-${invoiceID}`,
-          type:0,
-          permissionOverwrites:[
-            {id:interaction.guild.id,deny:["ViewChannel"]},
-            {id:interaction.user.id,allow:["ViewChannel","SendMessages"]},
-            {id:SUPPORT_ROLE_ID,allow:["ViewChannel","SendMessages"]},
-          ]
-        });
-
-        invoices[invoiceID]={userID:user.id,issuerID:interaction.user.id,product:desc,amount,status:"pending",ticketID:ticketChannel.id,createdAt:Date.now()};
+        // Rename channel
+        const channel = interaction.channel;
+        if(channel) channel.setName(`invoice-${invoiceID}`).catch(()=>{});
 
         const embed = createEmbed({
           title:`🧾 Invoice #${invoiceID}`,
@@ -254,29 +221,32 @@ client.on("interactionCreate", async interaction => {
             new ButtonBuilder().setCustomId(`deliver-${invoiceID}`).setLabel("Mark Delivered").setStyle(ButtonStyle.Success)
           );
 
-        await ticketChannel.send({content:`<@${user.id}>`,embeds:[embed],components:[buttons]});
+        const message = await channel.send({content:`<@${user.id}>`,embeds:[embed],components:[buttons]});
+        invoices[invoiceID]={userID:user.id,issuerID:interaction.user.id,product:desc,amount,status:"pending",channelID:channel.id,messageID:message.id,createdAt:Date.now()};
+
         if(logInvoice) logInvoice.send({embeds:[embed]});
-        reply(`✅ Invoice #${invoiceID} created in ticket: ${ticketChannel}`);
+        reply(`✅ Invoice #${invoiceID} created in this channel.`);
         break;
       }
 
+      // DELETE INVOICE
       case "deleteinvoice": {
         const id = interaction.options.getInteger("id");
         const invoice = invoices[id];
         if(!invoice) return reply("❌ Invoice not found");
-        const ticketChannel = await interaction.guild.channels.fetch(invoice.ticketID);
-        if(ticketChannel) ticketChannel.delete().catch(()=>{});
         delete invoices[id];
         if(logInvoice) logInvoice.send({embeds:[createEmbed({title:`🗑️ Invoice #${id} Deleted`,description:`Invoice removed by ${interaction.user.tag}`,color:"#e74c3c"})]});
         reply(`✅ Invoice #${id} deleted`);
         break;
       }
 
+      // SET ALT DAYS
       case "setaltdays":
-        altDays=interaction.options.getInteger("days");
+        altDays = interaction.options.getInteger("days");
         reply(`✅ Alt detection set to ${altDays} days`);
         break;
 
+      // USERINFO
       case "userinfo": {
         const user = interaction.options.getUser("user");
         const m = await interaction.guild.members.fetch(user.id).catch(()=>null);
@@ -287,9 +257,8 @@ client.on("interactionCreate", async interaction => {
         const isUserAlt = m?isAltAccount(m):false;
 
         const statusInfo = invoice ? `Invoice #${Object.keys(invoices).find(k=>invoices[k].userID===user.id)} | ${invoices[Object.keys(invoices).find(k=>invoices[k].userID===user.id)].status}` : "No Invoice Found";
-        let embedColor = "#2ecc71"; // green by default
+        let embedColor = "#2ecc71"; // green
         let emoji = "✅";
-
         if(isUserAlt){ embedColor="#ff0000"; emoji="⚠️"; }
         else if(modHistory.length>0){ embedColor="#f1c40f"; emoji="❓"; }
 
@@ -302,7 +271,7 @@ client.on("interactionCreate", async interaction => {
             {name:"Joined Server",value:m?.joinedAt?.toDateString()||"Unknown",inline:true},
             {name:"Account Created",value:user.createdAt.toDateString(),inline:true},
             {name:"Invoice Status",value:statusInfo,inline:true},
-            {name:"Invoice Date",value:invoice?new Date(invoice.createdAt).toDateString():"N/A",inline:true},
+            {name:"Invoice Date",value:invoice?new Date(invoice[1].createdAt).toDateString():"N/A",inline:true},
             {name:"Roles",value:m?m.roles.cache.map(r=>r.name).join(", ")||"None":"None",inline:false},
             {name:"Last Message",value:lastMsg?`${lastMsg.createdAt} in <#${lastMsg.channel.id}>`:"No messages found",inline:false},
             {name:"Last VC",value:lastVC?`${lastVC.name} at ${new Date().toDateString()}`:"Never connected",inline:false},
@@ -313,7 +282,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "warn":{
+      // WARN
+      case "warn": {
         const user = interaction.options.getUser("user");
         const reason = interaction.options.getString("reason");
         if(!warnings[user.id]) warnings[user.id]=[];
@@ -323,7 +293,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "kick":{
+      // KICK
+      case "kick": {
         const user = interaction.options.getUser("user");
         const reason = interaction.options.getString("reason")||"No reason";
         const m = await interaction.guild.members.fetch(user.id);
@@ -333,7 +304,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "ban":{
+      // BAN
+      case "ban": {
         const user = interaction.options.getUser("user");
         const reason = interaction.options.getString("reason")||"No reason";
         const m = await interaction.guild.members.fetch(user.id);
@@ -343,7 +315,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "addrole":{
+      // ADD ROLE
+      case "addrole": {
         const user = interaction.options.getUser("user");
         const role = interaction.options.getRole("role");
         const m = await interaction.guild.members.fetch(user.id);
@@ -353,7 +326,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "removerole":{
+      // REMOVE ROLE
+      case "removerole": {
         const user = interaction.options.getUser("user");
         const role = interaction.options.getRole("role");
         const m = await interaction.guild.members.fetch(user.id);
@@ -363,7 +337,8 @@ client.on("interactionCreate", async interaction => {
         break;
       }
 
-      case "purgeroles":{
+      // PURGE ROLES
+      case "purgeroles": {
         const user = interaction.options.getUser("user");
         const m = await interaction.guild.members.fetch(user.id);
         await m.roles.set([]);
