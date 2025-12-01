@@ -7,6 +7,7 @@ import {
   Routes,
   SlashCommandBuilder,
   EmbedBuilder,
+  PermissionFlagsBits,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -15,10 +16,10 @@ import {
 // ---------- ENV ----------
 const TOKEN = process.env.DISCORD_TOKEN;
 const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID;
+const INVOICE_LOG_CHANNEL = "1444496474690813972";
+const MODERATION_LOG_CHANNEL = "1444845107084787722";
 const APP_ID = process.env.APP_ID;
 const GUILD_ID = process.env.GUILD_ID;
-const INVOICE_LOG_ID = "1444496474690813972";
-const MOD_LOG_ID = "1444845107084787722";
 
 // ---------- CLIENT ----------
 const client = new Client({
@@ -26,27 +27,32 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
 // ---------- STORAGE ----------
-const invoices = {};
-const warnings = {};
+const invoices = {}; // { invoiceID: { userID, issuerID, product, amount, status, ticketID, date } }
+const warnings = {}; // { userID: [reason1, reason2] }
 let altDays = 7;
 
 // ---------- HELPERS ----------
 function isAltAccount(member) {
-  return Date.now() - member.user.createdTimestamp < altDays * 24 * 60 * 60 * 1000;
+  if (!member || !member.user || !member.user.createdTimestamp) return false;
+  const accountAge = Date.now() - member.user.createdTimestamp;
+  return accountAge < altDays * 24 * 60 * 60 * 1000;
 }
 
-function createEmbed({ title, description, color = "#3498db", extra }) {
+function createEmbed({ title, description, color = "#3498db", extra, footer, icon }) {
   const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
+    .setTitle(title || "No Title")
+    .setDescription(description || "No Description")
     .setColor(color)
     .setTimestamp();
-  if (extra) embed.addFields({ name: "Extra Info", value: extra });
+  if (extra && typeof extra === "string" && extra.length > 0) embed.addFields({ name: "Extra Info", value: extra });
+  if (footer) embed.setFooter({ text: footer, iconURL: icon });
   return embed;
 }
 
@@ -77,7 +83,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("deleteinvoice")
     .setDescription("Delete an invoice")
-    .addIntegerOption(opt => opt.setName("invoiceid").setDescription("Invoice ID to delete").setRequired(true))
+    .addIntegerOption(opt => opt.setName("id").setDescription("Invoice ID").setRequired(true))
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -141,75 +147,61 @@ async function registerCommands() {
     console.log("Registering guild commands...");
     await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: commands });
     console.log("✅ Commands registered!");
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+  }
 }
 registerCommands();
 
 // ---------- BOT EVENTS ----------
-client.on("ready", () => {
-  console.log(`🤖 Bot online as ${client.user.tag}`);
-
-  // ---------- AUTOMATIC INVOICE REMINDERS ----------
-  setInterval(async () => {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const invoiceLog = guild.channels.cache.get(INVOICE_LOG_ID);
-
-    for (const [id, invoice] of Object.entries(invoices)) {
-      if (invoice.status === "pending") {
-        const user = await client.users.fetch(invoice.userID);
-        const embed = createEmbed({
-          title: `⏰ Reminder: Invoice #${id} Pending`,
-          description: `Invoice for **${invoice.product}** is still pending payment.`,
-          color: "#f39c12",
-          extra: `Amount: $${invoice.amount}\nCustomer: ${user.tag}`
-        });
-        try { user.send({ embeds: [embed] }); } catch {}
-        if(invoiceLog) invoiceLog.send({ embeds: [embed] });
-      }
-    }
-  }, 1000 * 60 * 60); // every 1 hour
-});
+client.on("ready", () => console.log(`🤖 Bot online as ${client.user.tag}`));
 
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand() && !i.isButton()) return;
 
-  const member = await i.guild.members.fetch(i.user.id);
-  const invoiceLog = i.guild.channels.cache.get(INVOICE_LOG_ID);
-  const modLog = i.guild.channels.cache.get(MOD_LOG_ID);
+  const reply = msg => i.reply({ content: msg, ephemeral: false });
+  const modLog = i.guild.channels.cache.get(MODERATION_LOG_CHANNEL);
+  const invoiceLog = i.guild.channels.cache.get(INVOICE_LOG_CHANNEL);
 
-  // ---------- ALT ACCOUNT ----------
-  if (isAltAccount(member) && modLog) {
-    modLog.send({
-      embeds: [createEmbed({
-        title: "⚠️ Alt Account Detected",
-        description: `${member.user.tag} has an account younger than ${altDays} days.`,
-        color: "#ff0000"
-      })]
-    });
-  }
+  // ---------- ALT ACCOUNT CHECK ----------
+  const member = await i.guild.members.fetch(i.user.id);
+  const isAlt = isAltAccount(member);
 
   // ---------- BUTTON HANDLER ----------
   if (i.isButton()) {
     const [action, invoiceID] = i.customId.split("-");
     const invoice = invoices[invoiceID];
-    if (!invoice) return i.reply({ content: "Invoice not found." });
+    if (!invoice) return reply("Invoice not found.");
 
     const user = await client.users.fetch(invoice.userID);
     const issuer = await client.users.fetch(invoice.issuerID);
     const ticketChannel = await i.guild.channels.fetch(invoice.ticketID);
 
-    invoice.status = action === "complete" ? "completed" : "delivered";
+    if (action === "complete") {
+      invoice.status = "completed";
+      const embed = createEmbed({
+        title: `✅ Invoice #${invoiceID} Completed`,
+        description: `Invoice for **${invoice.product}** is completed.`,
+        color: "#f1c40f",
+        extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
+      });
+      await ticketChannel.send({ embeds: [embed] });
+      if (invoiceLog) invoiceLog.send({ embeds: [embed] });
+      return reply("✅ Invoice marked completed");
+    }
 
-    const embed = createEmbed({
-      title: action === "complete" ? `✅ Invoice #${invoiceID} Completed` : `📦 Invoice #${invoiceID} Delivered`,
-      description: `Invoice for **${invoice.product}** is now ${invoice.status}.`,
-      color: action === "complete" ? "#f1c40f" : "#27ae60",
-      extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
-    });
-
-    await ticketChannel.send({ embeds: [embed] });
-    if (invoiceLog) invoiceLog.send({ embeds: [embed] });
-    return i.reply({ content: `✅ Invoice marked ${invoice.status}` });
+    if (action === "deliver") {
+      invoice.status = "delivered";
+      const embed = createEmbed({
+        title: `📦 Invoice #${invoiceID} Delivered`,
+        description: `Invoice for **${invoice.product}** has been delivered.`,
+        color: "#27ae60",
+        extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
+      });
+      await ticketChannel.send({ embeds: [embed] });
+      if (invoiceLog) invoiceLog.send({ embeds: [embed] });
+      return reply("✅ Invoice marked delivered");
+    }
   }
 
   // ---------- COMMAND HANDLER ----------
@@ -217,7 +209,7 @@ client.on("interactionCreate", async i => {
     switch(i.commandName) {
       case "ticket": {
         const type = i.options.getString("type");
-        const everyonePing = type === "support" ? `<@&${SUPPORT_ROLE_ID}>` : "";
+        const ping = type === "support" ? `<@&${SUPPORT_ROLE_ID}>` : "";
         const ticketChannel = await i.guild.channels.create({
           name: `${i.user.username}-${type}-ticket`,
           type: 0,
@@ -225,21 +217,23 @@ client.on("interactionCreate", async i => {
             { id: i.guild.id, deny: ["ViewChannel"] },
             { id: i.user.id, allow: ["ViewChannel","SendMessages"] },
             { id: SUPPORT_ROLE_ID, allow: ["ViewChannel","SendMessages"] },
-          ],
+          ]
         });
-        const embed = createEmbed({ title: `${type} Ticket`, description:`${everyonePing}\nA staff member will assist you shortly.`, color:"#f1c40f" });
-        await ticketChannel.send({ content: everyonePing, embeds: [embed] });
-        await i.reply({ content: `✅ Ticket created: ${ticketChannel}` });
+        const embed = createEmbed({
+          title: `${type} Ticket`,
+          description: `${ping}\nA staff member will assist you shortly.`,
+          color: "#f1c40f"
+        });
+        await ticketChannel.send({ content: ping, embeds: [embed] });
+        reply(`✅ Ticket created: ${ticketChannel}`);
         break;
       }
 
       case "invoice": {
-        if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return i.reply("❌ No permission.");
         const user = i.options.getUser("user");
         const amount = i.options.getInteger("amount");
         const description = i.options.getString("description");
         const invoiceID = Math.floor(1000 + Math.random() * 9000);
-
         const ticketChannel = await i.guild.channels.create({
           name: `invoice-${invoiceID}`,
           type: 0,
@@ -247,16 +241,15 @@ client.on("interactionCreate", async i => {
             { id: i.guild.id, deny: ["ViewChannel"] },
             { id: i.user.id, allow: ["ViewChannel","SendMessages"] },
             { id: SUPPORT_ROLE_ID, allow: ["ViewChannel","SendMessages"] },
-          ],
+          ]
         });
-
-        invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending", ticketID: ticketChannel.id };
+        invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending", ticketID: ticketChannel.id, date: new Date() };
 
         const embed = createEmbed({
           title: `🧾 Invoice #${invoiceID}`,
           description: `Invoice for **${description}**`,
           color: "#3498db",
-          extra: `Customer: ${user.tag}\nIssuer: ${i.user.tag}\nAmount: $${amount}\nPayment: [Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)`
+          extra: `Customer: ${user.tag}\nIssuer: ${i.user.tag}\nAmount: $${amount}\nStatus: Pending\nPayment: [Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)`
         });
 
         const buttons = new ActionRowBuilder().addComponents(
@@ -264,111 +257,93 @@ client.on("interactionCreate", async i => {
           new ButtonBuilder().setCustomId(`deliver-${invoiceID}`).setLabel("Mark Delivered").setStyle(ButtonStyle.Success)
         );
 
-        await ticketChannel.send({ content:`<@${user.id}>`, embeds:[embed], components:[buttons] });
-        if(invoiceLog) invoiceLog.send({ embeds:[embed] });
-        await i.reply({ content: `✅ Invoice #${invoiceID} created in ticket: ${ticketChannel}` });
+        await ticketChannel.send({ content: `<@${user.id}>`, embeds:[embed], components:[buttons] });
+        if (invoiceLog) invoiceLog.send({ embeds:[embed] });
+        reply(`✅ Invoice #${invoiceID} created in ticket: ${ticketChannel}`);
         break;
       }
 
       case "deleteinvoice": {
-        if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return i.reply("❌ No permission.");
-        const invoiceID = i.options.getInteger("invoiceid");
-        const invoice = invoices[invoiceID];
-        if(!invoice) return i.reply("❌ Invoice not found.");
-        delete invoices[invoiceID];
-        const embed = createEmbed({ title:"🗑️ Invoice Deleted", description:`Invoice #${invoiceID} has been deleted.`, color:"#e74c3c" });
-        if(invoiceLog) invoiceLog.send({ embeds:[embed] });
-        i.reply(`✅ Invoice #${invoiceID} deleted.`);
+        const id = i.options.getInteger("id");
+        const invoice = invoices[id];
+        if (!invoice) return reply("❌ Invoice not found.");
+        delete invoices[id];
+        reply(`✅ Invoice #${id} deleted.`);
+        if (invoiceLog) invoiceLog.send({ content: `🗑️ Invoice #${id} deleted by ${i.user.tag}` });
         break;
       }
 
-      case "setaltdays":
+      case "setaltdays": {
         altDays = i.options.getInteger("days");
-        i.reply(`✅ Alt detection days set to ${altDays}`);
+        reply(`✅ Alt detection days set to ${altDays}`);
         break;
+      }
 
       case "userinfo": {
         const user = i.options.getUser("user");
         const m = await i.guild.members.fetch(user.id);
+        const now = new Date();
+        const invoice = Object.entries(invoices).find(([id, inv]) => inv.userID === user.id)?.[1];
+
+        // Last message
+        let lastMessageTime = "No message found";
+        let lastMessageChannel = "";
+        try {
+          const channels = i.guild.channels.cache.filter(c => c.isText());
+          for (const [, ch] of channels) {
+            const messages = await ch.messages.fetch({ limit: 100 });
+            const userMsg = messages.find(msg => msg.author.id === user.id);
+            if (userMsg) {
+              lastMessageTime = userMsg.createdAt.toDateString();
+              lastMessageChannel = `<#${ch.id}>`;
+              break;
+            }
+          }
+        } catch {}
+
+        // Last VC join
+        let lastVCJoin = "No VC activity";
+        try {
+          const vcState = m.voice;
+          if (vcState.channelId) lastVCJoin = `<#${vcState.channelId}> at ${vcState.joinedAt ? vcState.joinedAt.toDateString() : "Unknown"}`;
+        } catch {}
+
+        // Moderation history
+        let modHistory = warnings[user.id]?.join("\n") || "None";
+
+        let flags = [];
+        if (isAltAccount(m)) flags.push("⚠️ Alt Account Detected");
+
+        let color = "#2ecc71"; // Green by default
+        if (flags.length > 0) color = "#e74c3c"; // red if flagged
+        else if (modHistory !== "None") color = "#f1c40f"; // yellow if moderation history
+
         const embed = createEmbed({
-          title:`ℹ️ User Info: ${user.tag}`,
-          color:"#3498db",
-          extra:`ID: ${user.id}\nJoined: ${m.joinedAt.toDateString()}\nAccount Created: ${user.createdAt.toDateString()}\nRoles: ${m.roles.cache.map(r=>r.name).join(", ")}\nWarnings: ${warnings[user.id]?.join("\n") || "None"}`
+          title: `${flags.length>0?"⚠️ ":"✅ "}User Info: ${user.tag}`,
+          color: color,
+          extra: `Name: ${user.tag}
+Discord ID: ${user.id}
+Date Joined Server: ${m.joinedAt ? m.joinedAt.toDateString() : "Unknown"}
+Account Created: ${user.createdAt ? user.createdAt.toDateString() : "Unknown"}
+Invoice Status: ${invoice ? invoice.status+" (#"+Object.keys(invoices).find(id=>invoices[id]===invoice)+")" : "No Invoice Found"}
+Invoice Date: ${invoice ? invoice.date.toDateString() : "N/A"}
+Roles: ${m.roles.cache.map(r=>r.name).join(", ") || "None"}
+Last Message: ${lastMessageTime} ${lastMessageChannel}
+Last VC Join: ${lastVCJoin}
+Moderation History: ${modHistory}
+Flags: ${flags.join(", ") || "None"}`
         });
-        i.reply({ embeds:[embed] });
+
+        reply({ embeds:[embed] });
         break;
       }
 
-      case "warn": {
-        const user = i.options.getUser("user");
-        const reason = i.options.getString("reason");
-        if(!warnings[user.id]) warnings[user.id]=[];
-        warnings[user.id].push(reason);
-        const embed = createEmbed({ title:"⚠️ User Warned", description:`${user.tag} was warned.\nReason: ${reason}`, color:"#f39c12" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ ${user.tag} has been warned.`);
-        break;
-      }
-
-      case "kick": {
-        const user = i.options.getUser("user");
-        const reason = i.options.getString("reason")||"No reason";
-        const m = await i.guild.members.fetch(user.id);
-        await m.kick(reason);
-        const embed = createEmbed({ title:"👢 User Kicked", description:`${user.tag} was kicked.\nReason: ${reason}`, color:"#e67e22" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ ${user.tag} was kicked.`);
-        break;
-      }
-
-      case "ban": {
-        const user = i.options.getUser("user");
-        const reason = i.options.getString("reason")||"No reason";
-        const m = await i.guild.members.fetch(user.id);
-        await m.ban({ reason });
-        const embed = createEmbed({ title:"⛔ User Banned", description:`${user.tag} was banned.\nReason: ${reason}`, color:"#c0392b" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ ${user.tag} was banned.`);
-        break;
-      }
-
-      case "addrole": {
-        const user = i.options.getUser("user");
-        const role = i.options.getRole("role");
-        const m = await i.guild.members.fetch(user.id);
-        await m.roles.add(role);
-        const embed = createEmbed({ title:"➕ Role Added", description:`Added ${role.name} to ${user.tag}`, color:"#2ecc71" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ Added ${role.name} to ${user.tag}`);
-        break;
-      }
-
-      case "removerole": {
-        const user = i.options.getUser("user");
-        const role = i.options.getRole("role");
-        const m = await i.guild.members.fetch(user.id);
-        await m.roles.remove(role);
-        const embed = createEmbed({ title:"➖ Role Removed", description:`Removed ${role.name} from ${user.tag}`, color:"#e74c3c" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ Removed ${role.name} from ${user.tag}`);
-        break;
-      }
-
-      case "purgeroles": {
-        const user = i.options.getUser("user");
-        const m = await i.guild.members.fetch(user.id);
-        await m.roles.set([]);
-        const embed = createEmbed({ title:"🗑️ Roles Purged", description:`All roles removed from ${user.tag}`, color:"#9b59b6" });
-        if(modLog) modLog.send({ embeds:[embed] });
-        i.reply(`✅ All roles removed from ${user.tag}`);
-        break;
-      }
-
+      // Add other moderation commands (warn, kick, ban, addrole, removerole, purgeroles) here with modLog
       default:
-        i.reply("❌ Unknown command.");
+        reply("❌ Unknown command.");
         break;
     }
-  } catch(err){ console.error(err); i.reply("❌ Something went wrong."); }
+  } catch(err){ console.error(err); reply("❌ Something went wrong."); }
 });
 
 // ---------- EXPRESS KEEP-ALIVE ----------
