@@ -38,24 +38,105 @@ let altDays = 7;
 
 // ---------- HELPERS ----------
 function isAltAccount(member) {
-  const accountAge = Date.now() - member.user.createdTimestamp;
-  return accountAge < altDays * 24 * 60 * 60 * 1000;
+  return Date.now() - member.user.createdTimestamp < altDays * 24 * 60 * 60 * 1000;
 }
 
-function createEmbed({ title, description, color = "#3498db", extra, footer }) {
+function createAuditEmbed({ title, description, color = "#3498db", extra }) {
   const embed = new EmbedBuilder()
     .setTitle(title)
     .setDescription(description)
     .setColor(color)
     .setTimestamp();
   if (extra) embed.addFields({ name: "Extra Info", value: extra });
-  if (footer) embed.setFooter({ text: footer });
   return embed;
 }
 
 // ---------- SLASH COMMANDS ----------
 const commands = [
-  // ...same commands as before (ticket, invoice, checkinvoice, etc.)
+  // Ticket
+  new SlashCommandBuilder()
+    .setName("ticket")
+    .setDescription("Open a ticket")
+    .addStringOption(opt =>
+      opt.setName("type")
+        .setDescription("Type of ticket")
+        .setRequired(true)
+        .addChoices(
+          { name: "Support", value: "support" },
+          { name: "EUP Commissions", value: "eup" },
+          { name: "Livery Commissions", value: "livery" }
+        )
+    ).toJSON(),
+
+  // Invoice
+  new SlashCommandBuilder()
+    .setName("invoice")
+    .setDescription("Send a payment invoice")
+    .addUserOption(opt => opt.setName("user").setDescription("User to invoice").setRequired(true))
+    .addIntegerOption(opt => opt.setName("amount").setDescription("Amount").setRequired(true))
+    .addStringOption(opt => opt.setName("description").setDescription("Product description").setRequired(true))
+    .toJSON(),
+
+  // Set Alt Days
+  new SlashCommandBuilder()
+    .setName("setaltdays")
+    .setDescription("Set alt detection days")
+    .addIntegerOption(opt => opt.setName("days").setDescription("Days").setRequired(true))
+    .toJSON(),
+
+  // User Info
+  new SlashCommandBuilder()
+    .setName("userinfo")
+    .setDescription("Get user information")
+    .addUserOption(opt => opt.setName("user").setDescription("The user").setRequired(true))
+    .toJSON(),
+
+  // Warn
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Warn a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User to warn").setRequired(true))
+    .addStringOption(opt => opt.setName("reason").setDescription("Reason").setRequired(true))
+    .toJSON(),
+
+  // Kick
+  new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Kick a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User to kick").setRequired(true))
+    .addStringOption(opt => opt.setName("reason").setDescription("Reason"))
+    .toJSON(),
+
+  // Ban
+  new SlashCommandBuilder()
+    .setName("ban")
+    .setDescription("Ban a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User to ban").setRequired(true))
+    .addStringOption(opt => opt.setName("reason").setDescription("Reason"))
+    .toJSON(),
+
+  // Add Role
+  new SlashCommandBuilder()
+    .setName("addrole")
+    .setDescription("Add a role to a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User").setRequired(true))
+    .addRoleOption(opt => opt.setName("role").setDescription("Role").setRequired(true))
+    .toJSON(),
+
+  // Remove Role
+  new SlashCommandBuilder()
+    .setName("removerole")
+    .setDescription("Remove a role from a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User").setRequired(true))
+    .addRoleOption(opt => opt.setName("role").setDescription("Role").setRequired(true))
+    .toJSON(),
+
+  // Purge Roles
+  new SlashCommandBuilder()
+    .setName("purgeroles")
+    .setDescription("Remove all roles from a user")
+    .addUserOption(opt => opt.setName("user").setDescription("User to purge").setRequired(true))
+    .toJSON(),
 ];
 
 // ---------- REGISTER COMMANDS ----------
@@ -65,9 +146,7 @@ async function registerCommands() {
     console.log("Registering guild commands...");
     await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: commands });
     console.log("✅ Commands registered!");
-  } catch (err) {
-    console.error(err);
-  }
+  } catch (err) { console.error(err); }
 }
 registerCommands();
 
@@ -75,19 +154,20 @@ registerCommands();
 client.on("ready", () => console.log(`🤖 Bot online as ${client.user.tag}`));
 
 client.on("interactionCreate", async i => {
+  if (!i.isChatInputCommand() && !i.isButton()) return;
   const replyPublic = msg => i.reply({ content: msg, ephemeral: true });
   const logChannel = i.guild.channels.cache.get(LOG_CHANNEL_ID);
   const member = await i.guild.members.fetch(i.user.id);
 
-  // ---------- ALT ACCOUNT ----------
-  if (isAltAccount(member)) {
-    const altEmbed = createEmbed({
-      title: "⚠️ Alt Account Detected",
-      description: `${member.user.tag} has an account younger than ${altDays} days.`,
-      color: "#ff0000",
-      footer: `Account Created: ${member.user.createdAt.toDateString()}`
+  // Alt account detection
+  if (isAltAccount(member) && logChannel) {
+    logChannel.send({
+      embeds: [createAuditEmbed({
+        title: "⚠️ Alt Account Detected",
+        description: `${member.user.tag} has an account younger than ${altDays} days.`,
+        color: "#ff0000"
+      })]
     });
-    if (logChannel) logChannel.send({ embeds: [altEmbed] });
   }
 
   // ---------- BUTTON HANDLER ----------
@@ -102,43 +182,54 @@ client.on("interactionCreate", async i => {
 
     if (action === "complete") {
       invoice.status = "completed";
-      const embed = createEmbed({
-        title: `✅ Invoice #${invoiceID} Completed`,
-        description: `Invoice for **${invoice.product}** is completed.`,
-        color: "#f1c40f",
-        extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`,
-        footer: `Invoice ID: ${invoiceID}`
-      });
-      await ticketChannel.send({ embeds: [embed] });
-      if (logChannel) logChannel.send({ embeds: [embed] });
-      return i.reply({ content: "✅ Invoice marked completed", ephemeral: true });
+    } else if (action === "deliver") {
+      invoice.status = "delivered";
     }
 
-    if (action === "deliver") {
-      invoice.status = "delivered";
-      const embed = createEmbed({
-        title: `📦 Invoice #${invoiceID} Delivered`,
-        description: `Invoice for **${invoice.product}** has been delivered.`,
-        color: "#27ae60",
-        extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`,
-        footer: `Invoice ID: ${invoiceID}`
-      });
-      await ticketChannel.send({ embeds: [embed] });
-      if (logChannel) logChannel.send({ embeds: [embed] });
-      return i.reply({ content: "✅ Invoice marked delivered", ephemeral: true });
-    }
+    const embed = createAuditEmbed({
+      title: action === "complete" ? `✅ Invoice #${invoiceID} Completed` : `📦 Invoice #${invoiceID} Delivered`,
+      description: `Invoice for **${invoice.product}** is now ${invoice.status}.`,
+      color: action === "complete" ? "#f1c40f" : "#27ae60",
+      extra: `Customer: ${user.tag}\nIssuer: ${issuer.tag}\nAmount: $${invoice.amount}`
+    });
+
+    await ticketChannel.send({ embeds: [embed] });
+    if (logChannel) logChannel.send({ embeds: [embed] });
+    return i.reply({ content: `✅ Invoice marked ${invoice.status}`, ephemeral: true });
   }
 
   // ---------- COMMAND HANDLER ----------
-  if (!i.isChatInputCommand()) return;
   try {
     switch(i.commandName) {
-      case "invoice":
+      case "ticket": {
+        const type = i.options.getString("type");
+        const everyonePing = type === "support" ? `<@&${SUPPORT_ROLE_ID}>` : "";
+        const ticketChannel = await i.guild.channels.create({
+          name: `${i.user.username}-${type}-ticket`,
+          type: 0,
+          permissionOverwrites: [
+            { id: i.guild.id, deny: ["ViewChannel"] },
+            { id: i.user.id, allow: ["ViewChannel","SendMessages"] },
+            { id: SUPPORT_ROLE_ID, allow: ["ViewChannel","SendMessages"] },
+          ],
+        });
+        const embed = new EmbedBuilder()
+          .setTitle(`${type} Ticket`)
+          .setDescription(`${everyonePing}\nA staff member will assist you shortly.`)
+          .setColor("#f1c40f")
+          .setTimestamp();
+        await ticketChannel.send({ content: everyonePing, embeds: [embed] });
+        await i.reply({ content: `✅ Ticket created: ${ticketChannel}`, ephemeral: true });
+        break;
+      }
+
+      case "invoice": {
         if(!i.member.roles.cache.has(SUPPORT_ROLE_ID)) return replyPublic("❌ No permission.");
         const user = i.options.getUser("user");
         const amount = i.options.getInteger("amount");
         const description = i.options.getString("description");
         const invoiceID = Math.floor(1000 + Math.random() * 9000);
+
         const ticketChannel = await i.guild.channels.create({
           name: `invoice-${invoiceID}`,
           type: 0,
@@ -148,23 +239,29 @@ client.on("interactionCreate", async i => {
             { id: SUPPORT_ROLE_ID, allow: ["ViewChannel","SendMessages"] },
           ],
         });
+
         invoices[invoiceID] = { userID: user.id, issuerID: i.user.id, product: description, amount, status: "pending", ticketID: ticketChannel.id };
 
-        const embed = createEmbed({
-          title: `🧾 Invoice #${invoiceID}`,
-          description: `Invoice for **${description}**`,
-          color: "#3498db",
-          extra: `Customer: ${user.tag}\nIssuer: ${i.user.tag}\nAmount: $${amount}\nStatus: Pending\nPayment: [Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)`,
-          footer: `Invoice ID: ${invoiceID}`
-        });
+        const embed = new EmbedBuilder()
+          .setTitle(`🧾 Invoice #${invoiceID}`)
+          .setDescription(`Invoice for **${description}**`)
+          .addFields(
+            { name:"Customer", value:user.tag, inline:true },
+            { name:"Issuer", value:i.user.tag, inline:true },
+            { name:"Amount", value:`$${amount}`, inline:true },
+            { name:"Status", value:"Pending", inline:true },
+            { name:"Payment Options", value:"[Venmo](https://venmo.com/u/Nick-Welge) | [Paypal](https://www.paypal.com/paypalme/NickWelge) | [CashApp](https://cash.app/$KLHunter2008)" }
+          ).setColor("#3498db").setTimestamp();
 
         const buttons = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`complete-${invoiceID}`).setLabel("Mark Completed").setStyle(ButtonStyle.Primary),
           new ButtonBuilder().setCustomId(`deliver-${invoiceID}`).setLabel("Mark Delivered").setStyle(ButtonStyle.Success)
         );
+
         await ticketChannel.send({ content:`<@${user.id}>`, embeds:[embed], components:[buttons] });
         await i.reply({ content: `✅ Invoice #${invoiceID} created in ticket: ${ticketChannel}`, ephemeral: true });
         break;
+      }
 
       case "setaltdays":
         altDays = i.options.getInteger("days");
@@ -174,17 +271,88 @@ client.on("interactionCreate", async i => {
       case "userinfo": {
         const user = i.options.getUser("user");
         const m = await i.guild.members.fetch(user.id);
-        const embed = createEmbed({
-          title: `ℹ️ User Info: ${user.tag}`,
-          description: `User ID: ${user.id}\nJoined: ${m.joinedAt.toDateString()}\nAccount Created: ${user.createdAt.toDateString()}\nRoles: ${m.roles.cache.map(r=>r.name).join(", ")}`,
-          color: "#3498db",
-          extra: warnings[user.id]?.join("\n")||"No warnings"
-        });
-        await i.reply({ embeds:[embed], ephemeral:true });
+        const embed = new EmbedBuilder()
+          .setTitle(`ℹ️ User Info: ${user.tag}`)
+          .setColor("#3498db")
+          .addFields(
+            { name:"ID", value:user.id, inline:true },
+            { name:"Joined", value:m.joinedAt.toDateString(), inline:true },
+            { name:"Account Created", value:user.createdAt.toDateString(), inline:true },
+            { name:"Roles", value:m.roles.cache.map(r=>r.name).join(", "), inline:false },
+            { name:"Warnings", value:(warnings[user.id]?.join("\n")||"None"), inline:false }
+          );
+        i.reply({ embeds:[embed], ephemeral:true });
         break;
       }
 
-      // Add other commands (warn, kick, ban, addrole, removerole, purgeroles) here exactly as before
+      case "warn": {
+        const user = i.options.getUser("user");
+        const reason = i.options.getString("reason");
+        if(!warnings[user.id]) warnings[user.id]=[];
+        warnings[user.id].push(reason);
+        const embed = createAuditEmbed({ title:"⚠️ User Warned", description:`${user.tag} was warned.\nReason: ${reason}`, color:"#f39c12" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ ${user.tag} has been warned.`);
+        break;
+      }
+
+      case "kick": {
+        const user = i.options.getUser("user");
+        const reason = i.options.getString("reason")||"No reason";
+        const m = await i.guild.members.fetch(user.id);
+        await m.kick(reason);
+        const embed = createAuditEmbed({ title:"👢 User Kicked", description:`${user.tag} was kicked.\nReason: ${reason}`, color:"#e67e22" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ ${user.tag} was kicked.`);
+        break;
+      }
+
+      case "ban": {
+        const user = i.options.getUser("user");
+        const reason = i.options.getString("reason")||"No reason";
+        const m = await i.guild.members.fetch(user.id);
+        await m.ban({ reason });
+        const embed = createAuditEmbed({ title:"⛔ User Banned", description:`${user.tag} was banned.\nReason: ${reason}`, color:"#c0392b" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ ${user.tag} was banned.`);
+        break;
+      }
+
+      case "addrole": {
+        const user = i.options.getUser("user");
+        const role = i.options.getRole("role");
+        const m = await i.guild.members.fetch(user.id);
+        await m.roles.add(role);
+        const embed = createAuditEmbed({ title:"➕ Role Added", description:`Added ${role.name} to ${user.tag}`, color:"#2ecc71" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ Added ${role.name} to ${user.tag}`);
+        break;
+      }
+
+      case "removerole": {
+        const user = i.options.getUser("user");
+        const role = i.options.getRole("role");
+        const m = await i.guild.members.fetch(user.id);
+        await m.roles.remove(role);
+        const embed = createAuditEmbed({ title:"➖ Role Removed", description:`Removed ${role.name} from ${user.tag}`, color:"#e74c3c" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ Removed ${role.name} from ${user.tag}`);
+        break;
+      }
+
+      case "purgeroles": {
+        const user = i.options.getUser("user");
+        const m = await i.guild.members.fetch(user.id);
+        await m.roles.set([]);
+        const embed = createAuditEmbed({ title:"🗑️ Roles Purged", description:`All roles removed from ${user.tag}`, color:"#9b59b6" });
+        if(logChannel) logChannel.send({ embeds:[embed] });
+        replyPublic(`✅ All roles removed from ${user.tag}`);
+        break;
+      }
+
+      default:
+        replyPublic("❌ Unknown command.");
+        break;
     }
   } catch(err){ console.error(err); replyPublic("❌ Something went wrong."); }
 });
