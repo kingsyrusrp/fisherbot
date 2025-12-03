@@ -48,60 +48,11 @@ const altPinged = new Set();
 const globalBanList = new Set();
 
 // ---------- MUSIC QUEUES ----------
-// ---------- MUSIC QUEUES ----------
 const queues = new Map(); // guildId => { connection, player, songs[] }
 
-const playSong = async (interaction, url) => {
-  const voiceChannel = interaction.member.voice.channel;
-  if(!voiceChannel) return replyInteraction(interaction, "❌ You must be in a voice channel to play music!");
-
-  const permissions = voiceChannel.permissionsFor(interaction.client.user);
-  if(!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))
-    return replyInteraction(interaction, "❌ I need permissions to join and speak!");
-
-  let queue = queues.get(interaction.guildId);
-  const song = { url, requestedBy: interaction.user.tag };
-
-  // Check if the URL is valid
-  if(!ytdl.validateURL(url)) return replyInteraction(interaction, "❌ Invalid YouTube URL.");
-
-  if(!queue){
-    const connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: interaction.guildId,
-      adapterCreator: interaction.guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-      preferredEncryptionModes: ["aead_aes256_gcm_rtpsize", "aead_xchacha20_poly1305_rtpsize"]
-    });
-
-    // Wait until connection is ready or destroy it
-    try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 20000);
-    } catch(err) {
-      console.error("Voice connection failed:", err);
-      connection.destroy();
-      return replyInteraction(interaction, "❌ Failed to join voice channel.");
-    }
-
-    const player = createAudioPlayer();
-
-    // Catch player errors
-    player.on("error", error => {
-      console.error(`Audio player error: ${error.message}`);
-      // Remove song from queue to prevent blocking
-      if(queue && queue.songs.length > 0) queue.songs.shift();
-      if(queue && queue.songs.length > 0) playNext(queue);
-    });
-
-    connection.subscribe(player);
-
-    queue = { connection, player, songs: [] };
-    queues.set(interaction.guildId, queue);
-
-    // Function to play next song in queue
-const playNext = async (queueObj) => {
-  if(!queueObj || !queueObj.songs.length){
+// Helper to play next song
+const playNext = async (queueObj, interaction) => {
+  if (!queueObj || !queueObj.songs.length) {
     queueObj?.connection.destroy();
     queues.delete(interaction.guildId);
     return;
@@ -111,46 +62,91 @@ const playNext = async (queueObj) => {
   let resource;
 
   try {
-    // Wrap ytdl in a try/catch to handle removed/deleted videos
     resource = createAudioResource(
       ytdl(nextSong.url, {
         filter: "audioonly",
         highWaterMark: 1 << 25,
-        quality: "highestaudio",
+        quality: "highestaudio"
       }),
       { inputType: StreamType.Arbitrary }
     );
-  } catch(err) {
+  } catch (err) {
     console.error(`Failed to play ${nextSong.url}:`, err.message);
-    queueObj.songs.shift(); // remove the bad song
-    return playNext(queueObj); // try the next song
+    queueObj.songs.shift();
+    return playNext(queueObj, interaction);
   }
 
   queueObj.player.play(resource);
+};
 
-  // Optional: listen for player errors (just in case)
-  queueObj.player.once("error", err => {
-    console.error(`Audio player error for ${nextSong.url}:`, err.message);
-    queueObj.songs.shift(); // remove the failed song
-    playNext(queueObj); // play next
-  });
+const playSong = async (interaction, url) => {
+  const voiceChannel = interaction.member.voice.channel;
+  if (!voiceChannel) return replyInteraction(interaction, "❌ You must be in a voice channel!");
+
+  const permissions = voiceChannel.permissionsFor(interaction.client.user);
+  if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))
+    return replyInteraction(interaction, "❌ I need permissions to join and speak!");
+
+  if (!ytdl.validateURL(url)) return replyInteraction(interaction, "❌ Invalid YouTube URL.");
+
+  let queue = queues.get(interaction.guildId);
+  const song = { url, requestedBy: interaction.user.tag };
+
+  if (!queue) {
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: interaction.guildId,
+      adapterCreator: interaction.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
+      preferredEncryptionModes: ["aead_aes256_gcm_rtpsize", "aead_xchacha20_poly1305_rtpsize"]
+    });
+
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, 20000);
+    } catch (err) {
+      console.error("Voice connection failed:", err);
+      connection.destroy();
+      return replyInteraction(interaction, "❌ Failed to join voice channel.");
+    }
+
+    const player = createAudioPlayer();
+
+    player.on("error", error => {
+      console.error(`Audio player error: ${error.message}`);
+      if (queue && queue.songs.length > 0) queue.songs.shift();
+      playNext(queue, interaction);
+    });
+
+    player.on(AudioPlayerStatus.Idle, () => {
+      if (queue && queue.songs.length > 0) {
+        queue.songs.shift();
+        playNext(queue, interaction);
+      }
+    });
+
+    connection.subscribe(player);
+    queue = { connection, player, songs: [] };
+    queues.set(interaction.guildId, queue);
+  }
+
+  queue.songs.push(song);
+
+  if (queue.songs.length === 1) {
+    playNext(queue, interaction);
+    return replyInteraction(interaction, `🎵 Now playing: ${url}`);
+  } else {
+    return replyInteraction(interaction, `✅ Added to queue: ${url}`);
+  }
 };
 
 const skipSong = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No songs to skip.");
-  queue.songs.shift(); // Remove current song
-  if(queue.songs.length > 0){
-    const next = queue.songs[0];
-    const resource = createAudioResource(ytdl(next.url, { filter: 'audioonly', highWaterMark: 1<<25 }), { inputType: StreamType.Arbitrary });
-    queue.player.play(resource);
-  } else {
-    queue.connection.destroy();
-    queues.delete(interaction.guildId);
-  }
+  if (!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No songs to skip.");
+  queue.songs.shift();
+  playNext(queue, interaction);
   return replyInteraction(interaction, "⏭ Skipped current track.");
 };
-
 const pauseSong = interaction => {
   const queue = queues.get(interaction.guildId);
   if(!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
