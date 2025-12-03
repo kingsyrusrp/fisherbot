@@ -10,7 +10,7 @@ import {
   PermissionFlagsBits,
   ActivityType
 } from "discord.js";
-import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } from "@discordjs/voice";
+import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, entersState, VoiceConnectionStatus } from "@discordjs/voice";
 import ytdl from "ytdl-core";
 
 // ---------- ENV ----------
@@ -37,13 +37,13 @@ const client = new Client({
 });
 
 // ---------- STORAGE ----------
-const invoices = {}; 
-const warnings = {}; 
+const invoices = {};
+const warnings = {};
 const kicks = {};
 const bans = {};
 const unbans = {};
 let altDays = 7;
-const memberRoleSnapshots = {}; 
+const memberRoleSnapshots = {};
 const altPinged = new Set();
 const globalBanList = new Set();
 
@@ -52,27 +52,44 @@ const queues = new Map(); // guildId => { connection, player, songs[] }
 
 const playSong = async (interaction, url) => {
   const voiceChannel = interaction.member.voice.channel;
-  if(!voiceChannel) return replyInteraction(interaction, "❌ You must be in a voice channel to play music!");
+  if (!voiceChannel) return replyInteraction(interaction, "❌ You must be in a voice channel to play music!");
   const permissions = voiceChannel.permissionsFor(interaction.client.user);
-  if(!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) 
+  if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))
     return replyInteraction(interaction, "❌ I need permissions to join and speak!");
 
   let queue = queues.get(interaction.guildId);
   const song = { url, requestedBy: interaction.user.tag };
 
-  if(!queue){
-    // ✅ Fixed: specify a compatible encryption mode
+  if (!queue) {
+    // Create a robust voice connection
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: interaction.guildId,
       adapterCreator: interaction.guild.voiceAdapterCreator,
-      group: "default", // <-- fix encryption error
       selfDeaf: false,
       selfMute: false
     });
 
-    // Catch voice connection errors to prevent crashes
+    // Wait for ready state or handle errors
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, 20000);
+    } catch (err) {
+      console.error("Voice connection failed:", err);
+      connection.destroy();
+      return replyInteraction(interaction, "❌ Failed to join voice channel.");
+    }
+
     connection.on("error", err => console.error("Voice connection error:", err));
+    connection.on("stateChange", (oldState, newState) => {
+      if (newState.status === VoiceConnectionStatus.Disconnected) {
+        setTimeout(() => {
+          if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+            connection.destroy();
+            queues.delete(interaction.guildId);
+          }
+        }, 5000);
+      }
+    });
 
     const player = createAudioPlayer();
     connection.subscribe(player);
@@ -81,52 +98,70 @@ const playSong = async (interaction, url) => {
 
     player.on(AudioPlayerStatus.Idle, () => {
       queue.songs.shift();
-      if(queue.songs.length > 0){
-        const next = queue.songs[0];
-        const resource = createAudioResource(ytdl(next.url, { filter: 'audioonly' }), { inputType: StreamType.Arbitrary });
-        queue.player.play(resource);
+      if (queue.songs.length > 0) {
+        playQueueSong(queue);
       } else {
         queue.connection.destroy();
         queues.delete(interaction.guildId);
       }
     });
+
+    player.on("error", err => console.error("Audio player error:", err));
   }
 
   queue.songs.push(song);
 
-  if(queue.songs.length === 1){
-    const resource = createAudioResource(ytdl(url, { filter: 'audioonly' }), { inputType: StreamType.Arbitrary });
-    queue.player.play(resource);
+  if (queue.songs.length === 1) {
+    playQueueSong(queue);
     return replyInteraction(interaction, `🎵 Now playing: ${url}`);
   } else {
     return replyInteraction(interaction, `✅ Added to queue: ${url}`);
   }
 };
 
+// Helper to safely play a song
+const playQueueSong = async (queue) => {
+  if (!queue.songs.length) return;
+  const song = queue.songs[0];
+  try {
+    const stream = ytdl(song.url, {
+      filter: 'audioonly',
+      highWaterMark: 1 << 25 // Prevent stream throttling
+    });
+    const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
+    queue.player.play(resource);
+  } catch (err) {
+    console.error("Failed to play song:", err);
+    queue.songs.shift();
+    if (queue.songs.length > 0) playQueueSong(queue);
+    else queue.connection.destroy();
+  }
+};
+
 const skipSong = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No songs to skip.");
+  if (!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No songs to skip.");
   queue.player.stop();
   return replyInteraction(interaction, "⏭ Skipped current track.");
 };
 
 const pauseSong = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
+  if (!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
   queue.player.pause();
   return replyInteraction(interaction, "⏸ Music paused.");
 };
 
 const resumeSong = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
+  if (!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
   queue.player.unpause();
   return replyInteraction(interaction, "▶ Music resumed.");
 };
 
 const stopSong = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
+  if (!queue) return replyInteraction(interaction, "❌ No song is currently playing.");
   queue.connection.destroy();
   queues.delete(interaction.guildId);
   return replyInteraction(interaction, "⏹ Music stopped.");
@@ -134,14 +169,14 @@ const stopSong = interaction => {
 
 const nowPlaying = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No song currently playing.");
+  if (!queue || !queue.songs.length) return replyInteraction(interaction, "❌ No song currently playing.");
   return replyInteraction(interaction, `🎵 Now playing: ${queue.songs[0].url} (requested by ${queue.songs[0].requestedBy})`);
 };
 
 const showQueue = interaction => {
   const queue = queues.get(interaction.guildId);
-  if(!queue || !queue.songs.length) return replyInteraction(interaction, "❌ Queue is empty.");
-  const list = queue.songs.map((s,i) => `${i+1}. ${s.url} (requested by ${s.requestedBy})`).join("\n");
+  if (!queue || !queue.songs.length) return replyInteraction(interaction, "❌ Queue is empty.");
+  const list = queue.songs.map((s, i) => `${i + 1}. ${s.url} (requested by ${s.requestedBy})`).join("\n");
   return replyInteraction(interaction, `🎶 Current Queue:\n${list}`);
 };
 
