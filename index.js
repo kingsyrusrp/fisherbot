@@ -100,35 +100,40 @@ const playSong = async (interaction, url) => {
     queues.set(interaction.guildId, queue);
 
     // Function to play next song in queue
-    const playNext = async (queueObj) => {
-      if(!queueObj || !queueObj.songs.length){
-        queueObj.connection.destroy();
-        queues.delete(interaction.guildId);
-        return;
-      }
-
-      const nextSong = queueObj.songs[0];
-      let resource;
-      try {
-        resource = createAudioResource(ytdl(nextSong.url, { filter: "audioonly", highWaterMark: 1<<25 }), { inputType: StreamType.Arbitrary });
-      } catch(err) {
-        console.error("Failed to create audio resource:", err);
-        queueObj.songs.shift();
-        return playNext(queueObj);
-      }
-
-      queueObj.player.play(resource);
-    };
-
-    // Play the first song immediately
-    queue.songs.push(song);
-    playNext(queue);
-
-    return replyInteraction(interaction, `🎵 Now playing: ${url}`);
-  } else {
-    queue.songs.push(song);
-    return replyInteraction(interaction, `✅ Added to queue: ${url}`);
+const playNext = async (queueObj) => {
+  if(!queueObj || !queueObj.songs.length){
+    queueObj?.connection.destroy();
+    queues.delete(interaction.guildId);
+    return;
   }
+
+  const nextSong = queueObj.songs[0];
+  let resource;
+
+  try {
+    // Wrap ytdl in a try/catch to handle removed/deleted videos
+    resource = createAudioResource(
+      ytdl(nextSong.url, {
+        filter: "audioonly",
+        highWaterMark: 1 << 25,
+        quality: "highestaudio",
+      }),
+      { inputType: StreamType.Arbitrary }
+    );
+  } catch(err) {
+    console.error(`Failed to play ${nextSong.url}:`, err.message);
+    queueObj.songs.shift(); // remove the bad song
+    return playNext(queueObj); // try the next song
+  }
+
+  queueObj.player.play(resource);
+
+  // Optional: listen for player errors (just in case)
+  queueObj.player.once("error", err => {
+    console.error(`Audio player error for ${nextSong.url}:`, err.message);
+    queueObj.songs.shift(); // remove the failed song
+    playNext(queueObj); // play next
+  });
 };
 
 const skipSong = interaction => {
