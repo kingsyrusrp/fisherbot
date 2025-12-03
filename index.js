@@ -54,17 +54,26 @@ const playSong = async (interaction, url) => {
   const voiceChannel = interaction.member.voice.channel;
   if(!voiceChannel) return replyInteraction(interaction, "❌ You must be in a voice channel to play music!");
   const permissions = voiceChannel.permissionsFor(interaction.client.user);
-  if(!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) return replyInteraction(interaction, "❌ I need permissions to join and speak!");
+  if(!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) 
+    return replyInteraction(interaction, "❌ I need permissions to join and speak!");
 
   let queue = queues.get(interaction.guildId);
   const song = { url, requestedBy: interaction.user.tag };
 
   if(!queue){
+    // ✅ Fixed: specify a compatible encryption mode
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: interaction.guildId,
-      adapterCreator: interaction.guild.voiceAdapterCreator
+      adapterCreator: interaction.guild.voiceAdapterCreator,
+      group: "default", // <-- fix encryption error
+      selfDeaf: false,
+      selfMute: false
     });
+
+    // Catch voice connection errors to prevent crashes
+    connection.on("error", err => console.error("Voice connection error:", err));
+
     const player = createAudioPlayer();
     connection.subscribe(player);
     queue = { connection, player, songs: [] };
