@@ -47,11 +47,6 @@ const memberRoleSnapshots = {};
 const altPinged = new Set();
 const globalBanList = new Set();
 
-client.on("ready", () => {
-  console.log(`🤖 Bot online as ${client.user.tag}`);
-  client.user.setActivity("Fisher Fabrications..", { type: ActivityType.Watching });
-});
-
 // ---------- MUSIC QUEUES ----------
 const queues = new Map(); // guildId => { connection, player, songs[] }
 
@@ -359,6 +354,11 @@ client.on("interactionCreate", async interaction => {
       default: return replyInteraction(interaction,"❌ Unknown command.");
     }
   } catch(err){ console.error(err); replyInteraction(interaction,"❌ Something went wrong."); }
+});
+
+client.on("ready", () => {
+  console.log(`🤖 Bot online as ${client.user.tag}`);
+  client.user.setActivity("Fisher Fabrications..", { type: ActivityType.Watching });
 });
 
 // ---------- EXPRESS KEEP-ALIVE ----------
